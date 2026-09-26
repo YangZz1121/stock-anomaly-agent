@@ -21,8 +21,11 @@ services:
         sync: false
       - key: LLM_API_KEY
         sync: false
+      # 走 OpenAI 兼容接口，换供应商只改这两项即可，代码不用动
+      - key: LLM_BASE_URL
+        value: https://open.bigmodel.cn/api/paas/v4
       - key: LLM_MODEL
-        value: gpt-4o-mini
+        value: glm-5
       # 免费档没有持久磁盘，容器每次冷启动都是干净的。
       # 行业映射缓存会重建（首次请求要多花几十次接口调用），
       # 把预算压低一点，避免冷启动时打满扶摇的频率限制。
