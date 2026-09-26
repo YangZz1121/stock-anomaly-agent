@@ -9,7 +9,6 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   window: null,
-  faults: new Set(),
   brief: null,
   evidenceById: {},
   timer: null,
@@ -25,15 +24,6 @@ const EXAMPLES = [
   { q: "伊利股份今天为什么大跌？", w: "today" },
 ];
 
-const FAULTS = [
-  { key: "daily_bars", label: "个股行情失败" },
-  { key: "index_daily_bars", label: "指数行情失败" },
-  { key: "industry_indexes", label: "行业指数失败" },
-  { key: "search_events", label: "资讯检索失败" },
-  { key: "anomaly_reasons", label: "异动线索失败" },
-  { key: "trading_days", label: "交易日历失败" },
-];
-
 async function init() {
   $("sideExamples").innerHTML = EXAMPLES.map((e, i) =>
     `<button class="side-ex" type="button" data-i="${i}">${esc(e.q)}</button>`
@@ -45,12 +35,6 @@ async function init() {
     $("queryInput").value = ex.q;
     setWindow(ex.w);
     run();
-  });
-
-  renderChips($("faultChips"), FAULTS.map((f) => f.label), (_, i) => {
-    const key = FAULTS[i].key;
-    state.faults.has(key) ? state.faults.delete(key) : state.faults.add(key);
-    syncFaultChips();
   });
 
   try {
@@ -122,23 +106,6 @@ function setWindow(value) {
   $("windowHint").textContent = value ? "已指定研究窗口" : "不选时从问题里识别";
 }
 
-function syncFaultChips() {
-  [...$("faultChips").children].forEach((c, i) =>
-    c.classList.toggle("active", state.faults.has(FAULTS[i].key))
-  );
-}
-
-function renderChips(box, labels, onClick) {
-  box.innerHTML = "";
-  labels.forEach((label, i) => {
-    const el = document.createElement("span");
-    el.className = "chip";
-    el.textContent = label;
-    el.addEventListener("click", () => onClick(label, i));
-    box.appendChild(el);
-  });
-}
-
 function autosize() {
   const el = $("queryInput");
   el.style.height = "auto";
@@ -191,7 +158,6 @@ function run(presetQuery) {
   $("runBtn").disabled = true;
   const params = new URLSearchParams({ query });
   if (state.window) params.set("window", state.window);
-  if (state.faults.size) params.set("faults", [...state.faults].join(","));
 
   const started = performance.now();
   state.timer = setInterval(() => {
