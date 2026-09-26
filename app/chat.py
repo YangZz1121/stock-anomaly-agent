@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.contracts import ResearchWindow
+from app.engine.entity import resolve_company_keys
 from app.engine.intent import (
     CAPABILITY_REPLY,
     CHITCHAT_HINT,
@@ -16,6 +17,7 @@ from app.engine.intent import (
     ConversationContext,
     IntentKind,
     classify_intent,
+    is_nonsense_text,
 )
 from app.errors import NeedsWindowChoice, ResearchError
 from app.orchestrator import ResearchRequest, run_research, run_snapshot
@@ -39,12 +41,24 @@ class ChatResult(BaseModel):
     hint: str = ""
 
 
-def gate_intent(
+async def gate_intent(
     query: str,
     window: Optional[ResearchWindow] = None,
     context: Optional[ConversationContext] = None,
+    llm=None,
+    recorder: Optional[RunRecorder] = None,
+    resolved_keys: Optional[List[str]] = None,
 ) -> ChatIntent:
-    intent = classify_intent(query, window, context=context)
+    peek = classify_intent(query, window, context=context)
+    if peek.kind == IntentKind.CHITCHAT:
+        return peek
+    if peek.kind == IntentKind.NONSENSE and is_nonsense_text(query):
+        raise ResearchError("nonsense", peek.message, peek.hint)
+
+    keys = resolved_keys
+    if keys is None and peek.kind != IntentKind.CHITCHAT:
+        keys = await resolve_company_keys(query, llm=llm, recorder=recorder)
+    intent = classify_intent(query, window, context=context, resolved_keys=keys)
     if intent.kind == IntentKind.NONSENSE:
         raise ResearchError("nonsense", intent.message, intent.hint)
     if intent.kind == IntentKind.NEED_STOCK:
@@ -85,8 +99,12 @@ async def run_chat(
     settings: Settings,
     recorder: RunRecorder,
     context: Optional[ConversationContext] = None,
+    intent: Optional[ChatIntent] = None,
 ) -> ChatResult:
-    intent = gate_intent(query, window, context=context)
+    if intent is None:
+        intent = await gate_intent(
+            query, window, context=context, llm=providers.llm, recorder=recorder
+        )
     if intent.kind == IntentKind.CHITCHAT:
         text = await answer_chitchat(query, intent, providers.llm, recorder)
         return ChatResult(

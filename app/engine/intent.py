@@ -9,6 +9,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from app.contracts import ResearchWindow
+from app.engine.company_index import bind_companies
 from app.engine.resolver import ParsedQuery, parse_query
 
 _FULL_REPORT = re.compile(
@@ -97,6 +98,7 @@ def classify_intent(
     query: str,
     window: Optional[ResearchWindow] = None,
     context: Optional[ConversationContext] = None,
+    resolved_keys: Optional[List[str]] = None,
 ) -> ChatIntent:
     raw = (query or "").strip()
     parsed = parse_query(raw)
@@ -109,20 +111,25 @@ def classify_intent(
             message=MODEL_REPLY if topic == "model" else "",
             hint=CHITCHAT_HINT,
         )
-    keys = [
-        key
-        for key in parsed.search_keys
-        if key.strip().lower() not in _GREETINGS
-    ]
+    if resolved_keys is not None:
+        keys = [key for key in resolved_keys if key and key.strip().lower() not in _GREETINGS]
+    else:
+        keys = bind_companies(
+            [key for key in parsed.search_keys if key.strip().lower() not in _GREETINGS]
+        )
     inherited = False
     if not keys:
-        fallback = _context_keys(context)
+        fallback = bind_companies(_context_keys(context))
         if fallback and _can_inherit(raw):
             parsed = parsed.model_copy(
                 update={"name_hints": fallback, "name_hint": fallback[0]}
             )
             keys = fallback
             inherited = True
+    elif resolved_keys is not None:
+        parsed = parsed.model_copy(
+            update={"name_hints": keys, "name_hint": keys[0] if keys else None}
+        )
     if parsed.window is None and context and context.window:
         parsed = parsed.model_copy(update={"window": context.window})
     has_entity = bool(keys)
@@ -131,7 +138,7 @@ def classify_intent(
     wants_analysis = wants_full or bool(raw and _ANALYSIS.search(raw))
 
     if not has_entity:
-        if wants_analysis:
+        if wants_analysis or not is_nonsense_text(raw):
             return ChatIntent(
                 kind=IntentKind.NEED_STOCK,
                 parsed=parsed,

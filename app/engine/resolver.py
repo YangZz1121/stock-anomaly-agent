@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import re
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
@@ -181,22 +179,9 @@ def _dedupe(items: List[str]) -> List[str]:
 
 @lru_cache(maxsize=1)
 def load_aliases() -> Dict[str, str]:
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    path = os.path.join(root, "fixtures", "market", "aliases.json")
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    if not isinstance(data, dict):
-        return {}
-    aliases: Dict[str, str] = {}
-    for key, value in data.items():
-        if not key or not value:
-            continue
-        aliases[str(key)] = str(value)
-        if str(key).isascii():
-            aliases[str(key).lower()] = str(value)
-    return aliases
+    from app.engine.company_index import alias_map
+
+    return alias_map()
 
 
 def _alias_pairs() -> List[Tuple[str, str]]:

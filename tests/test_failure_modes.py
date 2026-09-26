@@ -128,7 +128,7 @@ def test_http_unknown_stock_returns_422(client: TestClient):
         "/api/research", json={"query": "不存在的公司", "window": "today"}
     )
     assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "stock_not_found"
+    assert r.json()["detail"]["code"] == "need_stock"
 
 
 def test_sse_reports_errors_as_events_not_as_a_dead_connection(client: TestClient):

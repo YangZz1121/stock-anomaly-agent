@@ -30,7 +30,9 @@ from app.engine.intent import (
     MODEL_REPLY,
     ConversationContext,
     IntentKind,
+    classify_intent,
     estimate_report_minutes,
+    is_nonsense_text,
     notice_text,
 )
 from app.errors import NeedsWindowChoice, ResearchError
@@ -88,15 +90,17 @@ async def research(payload: ResearchPayload) -> JSONResponse:
     context = _conversation_context(
         payload.context_stocks, payload.context_queries, payload.context_window
     )
-    intent = _classify_or_http_error(payload.query, payload.window, context)
-    if intent.kind == IntentKind.CHITCHAT and intent.chitchat_topic == "model":
+    peek = classify_intent(payload.query, payload.window, context)
+    if peek.kind == IntentKind.CHITCHAT and peek.chitchat_topic == "model":
         return JSONResponse(
             content={
                 "kind": "chitchat",
                 "message": MODEL_REPLY,
-                "hint": intent.hint or CHITCHAT_HINT,
+                "hint": peek.hint or CHITCHAT_HINT,
             }
         )
+    if peek.kind == IntentKind.NONSENSE and is_nonsense_text(payload.query):
+        raise HTTPException(status_code=422, detail=_error_body_intent(peek))
     settings = get_settings()
     providers = build_providers(settings, faults=set(payload.faults or []))
     recorder = RunRecorder(_run_id())
@@ -161,16 +165,14 @@ async def _stream(
     faults: set,
     context: Optional[ConversationContext] = None,
 ):
-    try:
-        intent = gate_intent(query, window, context=context)
-    except (NeedsWindowChoice, ResearchError) as exc:
-        yield _sse("error", _error_body(exc))
-        yield _sse("done", {})
-        return
-
-    if intent.kind == IntentKind.CHITCHAT:
-        async for chunk in _stream_chitchat(query, intent, faults):
+    peek = classify_intent(query, window, context=context)
+    if peek.kind == IntentKind.CHITCHAT:
+        async for chunk in _stream_chitchat(query, peek, faults):
             yield chunk
+        return
+    if peek.kind == IntentKind.NONSENSE and is_nonsense_text(query):
+        yield _sse("error", _error_body_intent(peek))
+        yield _sse("done", {})
         return
 
     settings = get_settings()
@@ -178,6 +180,15 @@ async def _stream(
     queue: asyncio.Queue = asyncio.Queue()
     recorder = RunRecorder(_run_id(), queue)
     task = None
+    try:
+        intent = await gate_intent(
+            query, window, context=context, llm=providers.llm, recorder=recorder
+        )
+    except (NeedsWindowChoice, ResearchError) as exc:
+        await providers.aclose()
+        yield _sse("error", _error_body(exc))
+        yield _sse("done", {})
+        return
 
     if intent.wants_full_report:
         minutes = estimate_report_minutes(
@@ -200,7 +211,9 @@ async def _stream(
     )
 
     task = asyncio.create_task(
-        run_chat(query, window, providers, settings, recorder, context)
+        run_chat(
+            query, window, providers, settings, recorder, context, intent=intent
+        )
     )
 
     try:
@@ -301,25 +314,20 @@ def _split_context(raw: Optional[str], sep: str = ",") -> List[str]:
     return [part.strip() for part in raw.split(sep) if part.strip()]
 
 
-def _classify_or_http_error(
-    query: str,
-    window: Optional[ResearchWindow],
-    context: Optional[ConversationContext] = None,
-):
-    try:
-        return gate_intent(query, window, context=context)
-    except NeedsWindowChoice as exc:
-        raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
-    except ResearchError as exc:
-        raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
-
-
 def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def _error_body(exc: ResearchError) -> Dict[str, str]:
     return {"code": exc.code, "message": exc.message, "hint": exc.hint}
+
+
+def _error_body_intent(intent) -> Dict[str, str]:
+    return {
+        "code": intent.kind.value,
+        "message": intent.message,
+        "hint": intent.hint,
+    }
 
 
 def _run_id() -> str:

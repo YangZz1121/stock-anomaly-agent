@@ -188,7 +188,9 @@ def test_http_snapshot_skips_evidence_and_llm():
     assert "search_ticker" in tools
     assert "daily_bars" in tools
     assert "search_events" not in tools
-    assert body["trace"]["llm_calls"] == []
+    purposes = {call.get("purpose") for call in body["trace"]["llm_calls"]}
+    assert purposes <= {"extract_companies", None}
+    assert "chitchat" not in purposes
 
 
 def test_sse_full_report_emits_notice_before_steps():
