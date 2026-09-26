@@ -1,13 +1,3 @@
----
-title: 个股异动研究 Agent
-emoji: 🔍
-colorFrom: blue
-colorTo: gray
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # 个股异动研究 Agent
 
 一个把"这只股票今天为什么跌"变成**可验证研究过程**的 Web 产品。
@@ -68,19 +58,33 @@ docker build -t stock-anomaly-agent .
 docker run -p 7860:7860 stock-anomaly-agent
 ```
 
-### 部署到 Hugging Face Spaces
+### 部署到 Render
 
-README 顶部的 YAML 是 Space 配置（`sdk: docker`，`app_port: 7860`），推送即生效。
+仓库根目录的 `render.yaml` 是 Blueprint 配置：Docker 运行时、免费档、
+新加坡节点、健康检查指向 `/api/health`。
 
-```bash
-git remote add space https://huggingface.co/spaces/<用户名>/stock-anomaly-agent
-git push space main
-```
+1. 把仓库推到 GitHub；
+2. Render 控制台 → **New → Blueprint** → 选中该仓库 → Apply；
+3. 需要真实数据源时，在 Service 的 **Environment** 里填写
+   `FUYAO_API_KEY` / `IFIND_MCP_URL` / `IFIND_API_KEY` / `LLM_API_KEY`。
 
-需要真实数据源时，在 Space 的 **Settings → Variables and secrets** 里添加
-`FUYAO_API_KEY` / `IFIND_MCP_URL` / `IFIND_API_KEY` / `LLM_API_KEY`。
-Secrets 以环境变量注入容器，**不写入仓库、不写入镜像**。
-一个都不配置时，Space 会运行在构造数据集上并在页面顶部如实声明。
+`render.yaml` 里这些键全部标了 `sync: false`，意思是"在控制台单独填写，不进仓库"，
+所以仓库和镜像里都不存在任何密钥。一个都不填时服务会运行在构造数据集上，
+并在页面顶部如实声明降级状态。
+
+服务通过 `PORT` 环境变量绑定端口（Render 默认 `10000`），`Dockerfile` 的
+启动命令已经读这个变量，因此本地、Render、其他容器平台用的是同一个镜像。
+
+**免费档的两个特性需要知道**：无访问 15 分钟后容器会休眠，下次请求唤醒约需 1 分钟；
+免费档没有持久磁盘，行业映射缓存每次冷启动都会重建
+（所以 `render.yaml` 把 `INDUSTRY_MAP_MAX_CALLS` 压到了 40，避免冷启动打满接口频率限制）。
+
+### 关于 Hugging Face Spaces
+
+最初的部署目标是 HF Spaces，后来放弃了。原因记录在此，避免以后重复踩：
+HF 现在**只有 Static Space 免费**，Gradio 和 Docker Space 都需要 PRO 账号。
+而 Static Space 没有服务端运行时，跑不了 FastAPI；它的 secrets 还是通过
+`window.huggingface.variables` 暴露给客户端 JavaScript 的，用来放 API Key 本身就不合规。
 
 ---
 

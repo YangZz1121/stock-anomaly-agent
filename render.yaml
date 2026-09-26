@@ -1,0 +1,30 @@
+# Render Blueprint。在 Render 控制台选 "New → Blueprint" 并指向本仓库即可。
+#
+# 所有密钥都标了 sync: false —— 这表示"在控制台里单独填写，不要存进仓库"。
+# 仓库里因此不存在任何密钥；一个都不填时产品会自动降级到内置构造数据集，
+# 并在页面顶部如实声明。
+services:
+  - type: web
+    name: stock-anomaly-agent
+    runtime: docker
+    plan: free
+    # 免费档可选 oregon / ohio / virginia / frankfurt / singapore。
+    # 选新加坡是因为评审大概率在国内打开，这个节点延迟最低。
+    region: singapore
+    healthCheckPath: /api/health
+    envVars:
+      - key: FUYAO_API_KEY
+        sync: false
+      - key: IFIND_MCP_URL
+        sync: false
+      - key: IFIND_API_KEY
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: gpt-4o-mini
+      # 免费档没有持久磁盘，容器每次冷启动都是干净的。
+      # 行业映射缓存会重建（首次请求要多花几十次接口调用），
+      # 把预算压低一点，避免冷启动时打满扶摇的频率限制。
+      - key: INDUSTRY_MAP_MAX_CALLS
+        value: "40"
