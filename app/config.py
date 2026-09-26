@@ -62,14 +62,18 @@ class Settings(BaseSettings):
     # --- 行业与市场基准 ---
     market_index_code: str = "000001.SH"
     market_index_name: str = "上证指数"
-    # 反向构建「股票 -> 行业指数」映射时，单次运行允许的成分股请求上限。
-    # 映射会落盘缓存，因此这个预算只在首次冷启动时才会用满。
-    industry_map_max_calls: int = 80
+    # 行业识别改为预置清单 + 定向核验，不再全市场扫描。
+    # 这两个字段只为兼容旧环境变量，运行时不再使用。
+    industry_map_max_calls: int = 1
     industry_map_ttl_hours: int = 72
 
     http_timeout_s: float = 20.0
     cache_dir: str = ".cache"
     fixtures_dir: str = "fixtures"
+    # 慢变列表（交易日历、标的检索、行业指数、成分股）的进程/落盘缓存
+    static_cache_ttl_hours: int = 12
+    # 日 K 进程缓存。历史区间几乎不变；含当日的请求用较短 TTL。
+    bars_cache_ttl_seconds: int = 180
 
     def resolved_market_provider(self) -> str:
         if self.market_provider != "auto":

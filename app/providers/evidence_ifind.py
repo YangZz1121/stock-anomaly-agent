@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -76,6 +77,7 @@ _DOMAIN_SOURCES = {
 }
 
 
+@lru_cache(maxsize=512)
 def _source_from_url(url: Optional[str]) -> str:
     if not url:
         return "iFinD 资讯"
@@ -264,15 +266,20 @@ class IFindEvidenceProvider:
         size = max(1, min(limit, 20))  # 工具上限 20
         terms = f"{query} {SCOPE_HINTS.get(scope, '')}".strip()
 
-        news = await self._call_tool(
-            "search_news",
-            {
-                "query": terms,
-                "time_start": start_date,
-                "time_end": end_date,
-                "size": size,
-            },
-        )
+        news_args = {
+            "query": terms,
+            "time_start": start_date,
+            "time_end": end_date,
+            "size": size,
+        }
+        if scope == "company":
+            news, notice = await asyncio.gather(
+                self._call_tool("search_news", news_args),
+                self._call_tool("search_notice", news_args),
+            )
+        else:
+            news = await self._call_tool("search_news", news_args)
+            notice = None
         if not news.ok:
             return Fetched(
                 status=news.status,
@@ -292,21 +299,10 @@ class IFindEvidenceProvider:
             )
         events.extend(self._to_news_events(items, scope))
 
-        # 公司范围额外取公告：公告是 T1 权威来源，也是确认公司业务暴露的主要依据
-        if scope == "company":
-            notice = await self._call_tool(
-                "search_notice",
-                {
-                    "query": terms,
-                    "time_start": start_date,
-                    "time_end": end_date,
-                    "size": size,
-                },
-            )
-            if notice.ok:
-                rows = self._unwrap(notice.value or {}, "")
-                if rows:
-                    events.extend(self._to_notice_events(rows, scope))
+        if notice is not None and notice.ok:
+            rows = self._unwrap(notice.value or {}, "")
+            if rows:
+                events.extend(self._to_notice_events(rows, scope))
 
         if not events:
             return Fetched.failure(

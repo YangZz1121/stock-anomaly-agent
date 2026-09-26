@@ -34,11 +34,34 @@ class ProviderBundle(BaseModel):
                 await close()
 
 
+class ProviderStatus(BaseModel):
+    labels: Dict[str, str]
+    degraded: bool
+
+
+def describe_providers(settings: Optional[Settings] = None) -> ProviderStatus:
+    """只根据配置声明当前数据源，不创建 HTTP 客户端。"""
+    settings = settings or get_settings()
+    market_choice = settings.resolved_market_provider()
+    evidence_choice = settings.resolved_evidence_provider()
+    llm_choice = settings.resolved_llm_provider()
+    labels = {
+        "market": _label(market_choice, "扶摇金融数据 API", "构造数据集"),
+        "evidence": _label(evidence_choice, "iFinD MCP", "构造证据集"),
+        "llm": (
+            f"{settings.llm_model}" if llm_choice == "openai" else "确定性启发式推理层"
+        ),
+    }
+    degraded = "mock" in {market_choice, evidence_choice, llm_choice}
+    return ProviderStatus(labels=labels, degraded=degraded)
+
+
 def build_providers(
     settings: Optional[Settings] = None, faults: Optional[Set[str]] = None
 ) -> ProviderBundle:
     settings = settings or get_settings()
     faults = faults or set()
+    status = describe_providers(settings)
 
     market_choice = settings.resolved_market_provider()
     if market_choice == "fuyao":
@@ -58,16 +81,12 @@ def build_providers(
     else:
         llm = DisabledLLM()
 
-    labels = {
-        "market": _label(market_choice, "扶摇金融数据 API", "构造数据集"),
-        "evidence": _label(evidence_choice, "iFinD MCP", "构造证据集"),
-        "llm": (
-            f"{settings.llm_model}" if llm_choice == "openai" else "确定性启发式推理层"
-        ),
-    }
-    degraded = "mock" in {market_choice, evidence_choice, llm_choice}
     return ProviderBundle(
-        market=market, evidence=evidence, llm=llm, labels=labels, degraded=degraded
+        market=market,
+        evidence=evidence,
+        llm=llm,
+        labels=status.labels,
+        degraded=status.degraded,
     )
 
 

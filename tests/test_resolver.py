@@ -37,6 +37,18 @@ def test_extracts_various_code_formats():
     assert parse_query("看看600519").code == "600519"
 
 
+def test_alias_maps_nicknames_to_official_names():
+    assert parse_query("宁王今天怎么了").name_hint == "宁德时代"
+    assert parse_query("茅台最近5天走势").name_hint == "贵州茅台"
+    assert parse_query("CATL").name_hint == "宁德时代"
+
+
+def test_extracts_multiple_company_names():
+    q = parse_query("茅台和伊利今天异动对比")
+    assert q.name_hints == ["贵州茅台", "伊利股份"]
+    assert q.search_keys == ["贵州茅台", "伊利股份"]
+
+
 def test_window_maps_to_last_trading_day_when_today_is_holiday():
     res = resolve_window(
         ResearchWindow.TODAY, DAYS, baseline_days=5, reference_day="2026-09-27"

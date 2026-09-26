@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -240,6 +240,7 @@ class ResearchBrief(BaseModel):
 
     run_id: str
     created_at: str
+    kind: Literal["snapshot", "report"] = "report"
     subject: SubjectSection
     what_happened: WhatHappenedSection
     why_happened: WhyHappenedSection

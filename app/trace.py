@@ -13,13 +13,19 @@ from typing import Any, Dict, List, Optional
 from app.contracts import FetchStatus, ToolCall
 
 # 前端进度条的固定步骤，保证顺序稳定
-PROGRESS_STEPS: List[Dict[str, str]] = [
+SNAPSHOT_STEPS: List[Dict[str, str]] = [
     {"key": "resolve", "label": "识别标的与研究窗口"},
+    {"key": "quote", "label": "获取个股行情"},
+    {"key": "profile", "label": "整理价格快照"},
+]
+
+PROGRESS_STEPS: List[Dict[str, str]] = [
+    {"key": "resolve", "label": "识别标的、行业与研究窗口"},
     {"key": "quote", "label": "获取个股行情"},
     {"key": "market", "label": "对比市场"},
     {"key": "industry", "label": "对比行业"},
     {"key": "priority", "label": "确定研究优先级"},
-    {"key": "retrieve", "label": "检索市场 / 行业 / 公司信息"},
+    {"key": "retrieve", "label": "定向检索所属行业与公司资讯"},
     {"key": "drivers", "label": "生成并验证候选驱动因素"},
     {"key": "counter", "label": "寻找反向证据"},
     {"key": "exposure", "label": "确认公司暴露"},

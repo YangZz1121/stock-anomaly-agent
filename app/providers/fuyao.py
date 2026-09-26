@@ -10,15 +10,28 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import httpx
 
+from app.cache import (
+    get_or_fetch,
+    load_json_file,
+    memory_get,
+    memory_set,
+    resolve_cache_dir,
+    save_json_file,
+)
 from app.config import Settings
 from app.contracts import FetchStatus, Fetched
 from app.providers.base import AnomalyReason, Bar, IndexInfo, RawEvent, TickerInfo
-from app.timeutil import from_compact, from_ms, to_ms
+from app.timeutil import from_compact, from_ms, today_str, to_ms
+
+T = TypeVar("T")
+
+_CLIENTS: Dict[str, httpx.AsyncClient] = {}
 
 # 业务错误码 -> 人类可读说明
 CODE_MESSAGES: Dict[int, str] = {
@@ -41,21 +54,105 @@ CODE_MESSAGES: Dict[int, str] = {
 MISSING_CODES = {3001, 3002, 3004}
 
 
+class _FetchFailed(Exception):
+    def __init__(self, result: Fetched) -> None:
+        super().__init__(result.note or "fetch failed")
+        self.result = result
+
+
+def _shared_client(settings: Settings) -> httpx.AsyncClient:
+    key = f"{settings.fuyao_base_url}|{settings.fuyao_api_key or ''}|{settings.http_timeout_s}"
+    client = _CLIENTS.get(key)
+    if client is None:
+        client = httpx.AsyncClient(
+            base_url=settings.fuyao_base_url,
+            timeout=settings.http_timeout_s,
+            headers={"X-api-key": settings.fuyao_api_key or ""},
+        )
+        _CLIENTS[key] = client
+    return client
+
+
 class FuyaoProvider:
     name = "fuyao"
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client = httpx.AsyncClient(
-            base_url=settings.fuyao_base_url,
-            timeout=settings.http_timeout_s,
-            headers={"X-api-key": settings.fuyao_api_key or ""},
-        )
+        self._client = _shared_client(settings)
         self._lock = asyncio.Lock()
         self._last_call = 0.0
+        self._disk_path = os.path.join(
+            resolve_cache_dir(settings.cache_dir), f"static.{self.name}.json"
+        )
+        self._disk = load_json_file(self._disk_path, settings.static_cache_ttl_hours) or {
+            "built_at": 0.0,
+            "trading_days": None,
+            "industry_indexes": None,
+            "tickers": {},
+            "constituents": {},
+        }
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        # 进程级客户端跨请求复用，不在单次研究结束时关闭
+        return None
+
+    def _static_ttl(self) -> float:
+        return self._settings.static_cache_ttl_hours * 3600
+
+    def _bars_ttl(self, end: str) -> float:
+        if end >= today_str():
+            return float(self._settings.bars_cache_ttl_seconds)
+        return self._static_ttl()
+
+    def _persist(self) -> None:
+        save_json_file(self._disk_path, self._disk)
+
+    async def _cached_list(
+        self,
+        mem_key: str,
+        disk_slot: str,
+        disk_key: Optional[str],
+        fetch: Callable[[], Awaitable[Fetched[List[Any]]]],
+        rebuild: Callable[[List[Any]], List[Any]],
+        dump: Callable[[Any], Any],
+    ) -> Fetched[List[Any]]:
+        def _copy(items: List[Any]) -> List[Any]:
+            return rebuild(items)
+
+        hit = memory_get(mem_key)
+        if hit is not None:
+            return Fetched.success(
+                _copy(hit), f"cache:{mem_key}", self.name, note="来自进程缓存"
+            )
+
+        bucket = self._disk.get(disk_slot)
+        if disk_key is not None:
+            bucket = (bucket or {}).get(disk_key)
+        if isinstance(bucket, dict) and bucket.get("value") is not None:
+            rebuilt = rebuild(bucket["value"])
+            memory_set(mem_key, rebuilt, self._static_ttl())
+            return Fetched.success(
+                _copy(rebuilt), f"cache:{mem_key}", self.name, note="来自本地落盘缓存"
+            )
+
+        async def _load() -> List[Any]:
+            res = await fetch()
+            if not res.ok or res.value is None:
+                raise _FetchFailed(res)
+            payload = [dump(item) for item in res.value]
+            if disk_key is None:
+                self._disk[disk_slot] = {"value": payload, "built_at": time.time()}
+            else:
+                slot = self._disk.setdefault(disk_slot, {})
+                slot[disk_key] = {"value": payload, "built_at": time.time()}
+            self._persist()
+            return res.value
+
+        try:
+            value = await get_or_fetch(mem_key, self._static_ttl(), _load, copy=_copy)
+        except _FetchFailed as exc:
+            return exc.result
+        return Fetched.success(value, f"cache:{mem_key}", self.name, note="已写入本地缓存")
 
     # ------------------------------------------------------------------
     # 底层调用
@@ -112,6 +209,17 @@ class FuyaoProvider:
     # ------------------------------------------------------------------
 
     async def search_ticker(self, query: str) -> Fetched[List[TickerInfo]]:
+        q = (query or "").strip()
+        return await self._cached_list(
+            f"fuyao:ticker:{q}",
+            "tickers",
+            q,
+            lambda: self._search_ticker_uncached(q),
+            _tickers_from_dump,
+            lambda t: t.model_dump(),
+        )
+
+    async def _search_ticker_uncached(self, query: str) -> Fetched[List[TickerInfo]]:
         res = await self._get(
             "/api/meta/tickers/search",
             {"q": query, "asset_type": "a-share", "limit": 10},
@@ -139,6 +247,16 @@ class FuyaoProvider:
         return Fetched.success(out, res.source, self.name, as_of=res.as_of)
 
     async def trading_days(self) -> Fetched[List[str]]:
+        return await self._cached_list(
+            f"fuyao:trading_days:{today_str()}",
+            "trading_days",
+            None,
+            self._trading_days_uncached,
+            lambda days: list(days),
+            lambda day: day,
+        )
+
+    async def _trading_days_uncached(self) -> Fetched[List[str]]:
         res = await self._get("/api/a-share/calendar/trading-days")
         if not res.ok:
             return Fetched(
@@ -166,7 +284,8 @@ class FuyaoProvider:
         )
 
     async def daily_bars(self, thscode: str, start: str, end: str) -> Fetched[List[Bar]]:
-        return await self._bars(
+        return await self._cached_bars(
+            f"fuyao:bars:{thscode}:{start}:{end}",
             "/api/a-share/prices/historical",
             {
                 "thscode": thscode,
@@ -175,12 +294,14 @@ class FuyaoProvider:
                 "end": to_ms(end),
                 "adjust": "forward",
             },
+            end,
         )
 
     async def index_daily_bars(
         self, thscode: str, start: str, end: str
     ) -> Fetched[List[Bar]]:
-        return await self._bars(
+        return await self._cached_bars(
+            f"fuyao:index_bars:{thscode}:{start}:{end}",
             "/api/a-share-index/prices/historical",
             {
                 "thscode": thscode,
@@ -188,7 +309,34 @@ class FuyaoProvider:
                 "start": to_ms(start),
                 "end": to_ms(end),
             },
+            end,
         )
+
+    async def _cached_bars(
+        self, mem_key: str, path: str, params: Dict[str, Any], end: str
+    ) -> Fetched[List[Bar]]:
+        hit = memory_get(mem_key)
+        if hit is not None:
+            return Fetched.success(
+                _bars_from_dump(hit), f"cache:{mem_key}", self.name, note="来自进程缓存"
+            )
+
+        async def _load() -> List[Bar]:
+            res = await self._bars(path, params)
+            if not res.ok or res.value is None:
+                raise _FetchFailed(res)
+            return res.value
+
+        try:
+            value = await get_or_fetch(
+                mem_key,
+                self._bars_ttl(end),
+                _load,
+                copy=_clone_bars,
+            )
+        except _FetchFailed as exc:
+            return exc.result
+        return Fetched.success(value, f"cache:{mem_key}", self.name, note="已写入进程缓存")
 
     async def _bars(self, path: str, params: Dict[str, Any]) -> Fetched[List[Bar]]:
         res = await self._get(path, params)
@@ -245,6 +393,16 @@ class FuyaoProvider:
         return Fetched.success(items, res.source, self.name, as_of=res.as_of)
 
     async def industry_indexes(self) -> Fetched[List[IndexInfo]]:
+        return await self._cached_list(
+            "fuyao:industry_indexes",
+            "industry_indexes",
+            None,
+            self._industry_indexes_uncached,
+            _indexes_from_dump,
+            lambda i: i.model_dump(),
+        )
+
+    async def _industry_indexes_uncached(self) -> Fetched[List[IndexInfo]]:
         res = await self._get(
             "/api/a-share-index/catalog/ths-index-list", {"tag": "industry"}
         )
@@ -265,6 +423,16 @@ class FuyaoProvider:
         return Fetched.success(out, res.source, self.name, as_of=res.as_of)
 
     async def index_constituents(self, thscode: str) -> Fetched[List[TickerInfo]]:
+        return await self._cached_list(
+            f"fuyao:constituents:{thscode}",
+            "constituents",
+            thscode,
+            lambda: self._index_constituents_uncached(thscode),
+            _tickers_from_dump,
+            lambda t: t.model_dump(),
+        )
+
+    async def _index_constituents_uncached(self, thscode: str) -> Fetched[List[TickerInfo]]:
         res = await self._get(
             "/api/a-share-index/constituents/ths-stock-list", {"thscode": thscode}
         )
@@ -381,6 +549,40 @@ class FuyaoEvidenceProvider:
                 )
             )
         return Fetched.success(out, res.source, self.name, as_of=res.as_of)
+
+
+def _tickers_from_dump(items: List[Any]) -> List[TickerInfo]:
+    out: List[TickerInfo] = []
+    for item in items:
+        if isinstance(item, TickerInfo):
+            out.append(item.model_copy())
+        else:
+            out.append(TickerInfo.model_validate(item))
+    return out
+
+
+def _indexes_from_dump(items: List[Any]) -> List[IndexInfo]:
+    out: List[IndexInfo] = []
+    for item in items:
+        if isinstance(item, IndexInfo):
+            out.append(item.model_copy())
+        else:
+            out.append(IndexInfo.model_validate(item))
+    return out
+
+
+def _bars_from_dump(items: List[Any]) -> List[Bar]:
+    out: List[Bar] = []
+    for item in items:
+        if isinstance(item, Bar):
+            out.append(item.model_copy())
+        else:
+            out.append(Bar.model_validate(item))
+    return out
+
+
+def _clone_bars(bars: List[Bar]) -> List[Bar]:
+    return [b.model_copy() for b in bars]
 
 
 def _num(value: Any) -> Optional[float]:

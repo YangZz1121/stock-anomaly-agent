@@ -202,6 +202,23 @@ button.ghost:disabled { opacity: .4; cursor: not-allowed; }
 .error-card h2 { margin: 0 0 6px; font-size: 16px; color: var(--bad); }
 .error-card p { margin: 0; color: var(--muted); font-size: 13px; }
 
+.plain-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow);
+}
+.plain-card p { margin: 0; color: var(--text); }
+.think-notice {
+  background: var(--accent-soft); color: #0d7a5f;
+  border-radius: 12px; padding: 10px 12px; margin-bottom: 10px;
+  font-size: 14px; font-weight: 600;
+}
+.think-task { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
+.company-kicker {
+  font-size: 12px; color: var(--faint); letter-spacing: .04em;
+  margin: 4px 2px 0;
+}
+.brief.snapshot { margin-bottom: 8px; }
+
 /* ---------- Brief 卡片 ---------- */
 .brief { display: flex; flex-direction: column; gap: 12px; }
 

@@ -137,10 +137,14 @@ def test_research_trace_records_every_tool_call():
 
 
 def test_http_research_returns_a_complete_brief(client: TestClient):
-    r = client.post("/api/research", json={"query": "宁德时代", "window": "d5"})
+    r = client.post(
+        "/api/research",
+        json={"query": "宁德时代最近5个交易日怎么一直跌", "window": "d5"},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["subject"]["stock"]["name"] == "宁德时代"
+    assert body["kind"] == "report"
     assert body["why_happened"]["drivers"]
     assert body["evidence"]
 
@@ -157,7 +161,9 @@ def test_config_endpoint_declares_degraded_mode(client: TestClient):
 
 def test_sse_stream_emits_progress_then_brief(client: TestClient):
     with client.stream(
-        "GET", "/api/research/stream", params={"query": "宁德时代", "window": "d5"}
+        "GET",
+        "/api/research/stream",
+        params={"query": "宁德时代最近5个交易日怎么一直跌", "window": "d5"},
     ) as r:
         assert r.status_code == 200
         events = [

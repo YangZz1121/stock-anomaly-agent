@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -42,20 +43,15 @@ from app.contracts import (
     ImpactDirection,
     PATTERN_LABELS,
     PricePattern,
+    ResearchPriority,
     ResearchWindow,
     SourceTier,
     SupportLevel,
 )
 from app.engine import guardrails, presenter
-from app.engine.industry import IndustryResolver
-from app.engine.patterns import build_window_profile
-from app.engine.price_profile import (
-    build_daily_profile,
-    describe_close_position,
-    describe_turnover,
-)
+from app.engine.price_profile import describe_close_position, describe_turnover
 from app.engine.priority import build_comparison, decide_priority, priority_label, scope_order
-from app.engine.resolver import parse_query, resolve_window
+from app.errors import NeedsWindowChoice, ResearchError
 from app.engine.verdict import (
     StrengthInput,
     apply_structural_gate,
@@ -64,6 +60,10 @@ from app.engine.verdict import (
     summarize_overall,
 )
 from app.ledger import EvidenceLedger
+from app.engine.resolver import parse_query, resolve_window
+from app.pipeline import fetch_snapshot, resolve_subject
+from app.pipeline.snapshot import _build_price_profiles, _fetch_bars
+from app.pipeline.subject import fetch_trading_days, resolve_stock
 from app.providers.base import Bar
 from app.providers.registry import ProviderBundle
 from app.schemas import (
@@ -87,21 +87,10 @@ from app.timeutil import now_iso
 from app.trace import RunRecorder
 
 
-class ResearchError(Exception):
-    def __init__(self, code: str, message: str, hint: str = "") -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.hint = hint
-
-
 class ResearchRequest(BaseModel):
     query: str
     window: Optional[ResearchWindow] = None
-
-
-class NeedsWindowChoice(ResearchError):
-    """只给了股票名、没给研究窗口时，由前端提示用户选择。"""
+    search_key: Optional[str] = None
 
 
 async def run_research(
@@ -113,80 +102,30 @@ async def run_research(
     ledger = EvidenceLedger()
     run_id = recorder.run_id
 
-    # ---------------- 输入解析 ----------------
-    recorder.step("resolve", "running")
-    parsed = parse_query(request.query)
-    window = request.window or parsed.window
-    if not parsed.search_key:
-        recorder.step("resolve", "failed")
-        raise ResearchError(
-            "no_stock",
-            "没有识别出股票名称或代码。",
-            "请输入 A 股公司名称或 6 位代码，例如「宁德时代今天为什么跌了这么多」。",
-        )
-    if window is None:
-        recorder.step("resolve", "failed")
-        raise NeedsWindowChoice(
-            "need_window",
-            "识别到股票，但没有指定研究窗口。",
-            "请选择研究窗口：今日 / 最近 3 个交易日 / 最近 5 个交易日。",
-        )
-
-    stock = await _resolve_stock(parsed.search_key, providers, recorder)
-
-    trading_days = await _fetch_trading_days(providers, recorder)
-    resolution = resolve_window(
-        window,
-        trading_days,
-        baseline_days=settings.turnover_baseline_days,
-    )
-    if resolution is None:
-        recorder.step("resolve", "failed")
-        raise ResearchError(
-            "no_calendar",
-            "交易日历数据不足，无法确定研究窗口。",
-            "该窗口需要的交易日数量超出了当前可用的日历范围。",
-        )
-    recorder.step(
-        "resolve",
-        "done",
-        f"{stock.name} {stock.thscode}，窗口 {resolution.info.actual_start} ~ {resolution.info.actual_end}",
-    )
-
-    gaps: List[DataGap] = []
-
-    # ---------------- 第一阶段：发生了什么 ----------------
-    recorder.step("quote", "running")
-    stock_bars, stock_gap = await _fetch_bars(
-        providers.market.daily_bars,
-        stock.thscode,
-        resolution.lookback_start,
-        resolution.info.actual_end,
+    subject = await resolve_subject(
+        request.query,
+        request.window,
+        providers,
+        settings,
         recorder,
-        "daily_bars",
-        f"{stock.name} 日 K",
+        search_key=request.search_key,
     )
-    if stock_gap:
-        gaps.append(stock_gap)
-    if not stock_bars:
-        recorder.step("quote", "failed")
-        raise ResearchError(
-            "no_price_data",
-            f"无法获取 {stock.name} 的行情数据，研究无法继续。",
-            stock_gap.reason if stock_gap else "",
-        )
-
-    window_bars = [b for b in stock_bars if b.date in set(resolution.window_days)]
-    history_bars = [b for b in stock_bars if b.date < resolution.info.actual_start]
-    if resolution.info.is_intraday and window_bars:
-        window_bars[-1].is_intraday = True
-    recorder.step("quote", "done", f"取得 {len(stock_bars)} 根日 K")
-
-    stock_cum, daily_profile, window_profile = _build_price_profiles(
-        window_bars, history_bars, window, settings
+    stock = subject.stock
+    industry = subject.industry
+    resolution = subject.resolution
+    window = (
+        request.window or subject.parsed.window or subject.resolution.info.window
     )
-    gaps.extend(window_profile.gaps if window_profile else [])
-    gaps.extend(daily_profile.gaps if daily_profile else [])
+
+    snapshot = await fetch_snapshot(subject, providers, settings, recorder, window)
+    gaps: List[DataGap] = list(snapshot.gaps)
+    window_bars = snapshot.window_bars
+    stock_cum = snapshot.stock_cum
+    daily_profile = snapshot.daily_profile
+    window_profile = snapshot.window_profile
+    market_cum = snapshot.market_cum
+    industry_cum = snapshot.industry_cum
+    clue_reasons = snapshot.clue_reasons
 
     stock_evidence = ledger.register_market_fact(
         claim=(
@@ -204,49 +143,28 @@ async def run_research(
         },
     )
 
-    # ---------------- 市场与行业 ----------------
-    recorder.step("market", "running")
-    market_cum, market_evidence_id, market_gap = await _index_performance(
-        providers,
-        recorder,
-        ledger,
-        settings.market_index_code,
-        settings.market_index_name,
-        resolution.window_days,
-        resolution.lookback_start,
-        "market",
-    )
-    if market_gap:
-        gaps.append(market_gap)
-    recorder.step("market", "done" if market_cum is not None else "failed")
-
-    recorder.step("industry", "running")
-    industry_resolver = IndustryResolver(settings, providers.market, providers.llm)
-    industry = await industry_resolver.resolve(stock.thscode, stock.name, recorder)
-    industry_cum: Optional[float] = None
-    industry_evidence_id: Optional[str] = None
-    if industry.index_code:
-        industry_cum, industry_evidence_id, industry_gap = await _index_performance(
-            providers,
-            recorder,
+    market_evidence_id: Optional[str] = None
+    if market_cum is not None:
+        market_evidence_id = _register_index_fact(
             ledger,
-            industry.index_code,
-            industry.index_name or industry.index_code,
+            providers,
+            settings.market_index_code,
+            settings.market_index_name,
             resolution.window_days,
-            resolution.lookback_start,
-            "industry",
+            market_cum,
+            snapshot.market_selected,
         )
-        if industry_gap:
-            gaps.append(industry_gap)
-    else:
-        gaps.append(
-            DataGap(
-                field="industry_index",
-                reason=industry.note or "未能识别所属行业指数",
-                impact="无法进行行业层面的横截面比较，行业类驱动因素的验证会受限",
-            )
+    industry_evidence_id: Optional[str] = None
+    if industry_cum is not None:
+        industry_evidence_id = _register_index_fact(
+            ledger,
+            providers,
+            industry.index_code or "",
+            industry.index_name or industry.index_code or "",
+            resolution.window_days,
+            industry_cum,
+            snapshot.industry_selected,
         )
-    recorder.step("industry", "done" if industry_cum is not None else "failed")
 
     comparison = build_comparison(
         stock_pct=stock_cum,
@@ -286,9 +204,11 @@ async def run_research(
 
     # ---------------- 第二阶段：为什么发生 ----------------
     recorder.step("retrieve", "running")
-    clue_pool = await _collect_clues(providers, recorder, ledger, stock.thscode)
+    clue_pool = register_clue_pool(
+        ledger, clue_reasons, getattr(providers.market, "name", "unknown")
+    )
     evidence_window = build_evidence_window(
-        resolution.window_days, trading_days, settings.evidence_extended_window_days
+        resolution.window_days, subject.trading_days, settings.evidence_extended_window_days
     )
     collector = EvidenceCollector(providers.evidence, ledger, recorder)
     collection = await collector.collect(
@@ -328,16 +248,21 @@ async def run_research(
     recorder.step("drivers", "running")
     proposals = await reasoner.propose_drivers(collection.clusters, ctx, scopes)
     cluster_by_id = {c.cluster_id: c for c in collection.clusters}
+    pairs = [
+        (proposal, cluster_by_id[proposal.cluster_id])
+        for proposal in proposals
+        if proposal.cluster_id in cluster_by_id
+    ]
+    mechanisms = await asyncio.gather(
+        *[
+            reasoner.assess_mechanism(proposal, cluster, collection.clusters, ctx)
+            for proposal, cluster in pairs
+        ]
+    )
 
     drivers: List[Driver] = []
     drafts: Dict[str, Any] = {}
-    for i, proposal in enumerate(proposals, start=1):
-        cluster = cluster_by_id.get(proposal.cluster_id)
-        if cluster is None:
-            continue
-        mechanism = await reasoner.assess_mechanism(
-            proposal, cluster, collection.clusters, ctx
-        )
+    for i, ((proposal, cluster), mechanism) in enumerate(zip(pairs, mechanisms), start=1):
         checks = build_checks(
             proposal, cluster, ctx, mechanism.result, mechanism.reasoning
         )
@@ -362,15 +287,22 @@ async def run_research(
     # ---------------- 第三阶段：意味着什么 ----------------
     recorder.step("exposure", "running")
     recorder.step("transmission", "running")
+    stage_three = [driver for driver in drivers if enters_stage_three(driver)]
+    transmissions = await asyncio.gather(
+        *[
+            reasoner.build_transmission(
+                drafts[driver.id][0],
+                drafts[driver.id][1],
+                collection.clusters,
+                ctx,
+                ledger,
+            )
+            for driver in stage_three
+        ]
+    )
     assessed_ids: List[str] = []
-    for driver in drivers:
-        if not enters_stage_three(driver):
-            continue
+    for driver, draft in zip(stage_three, transmissions):
         proposal, cluster, checks, mechanism = drafts[driver.id]
-        draft = await reasoner.build_transmission(
-            proposal, cluster, collection.clusters, ctx, ledger
-        )
-        # 模型或启发式给出的反向证据，补进驱动因素
         extra_supporting, extra_contra = split_evidence_refs(
             cluster, checks, draft.counter_evidence_ids, ledger
         )
@@ -447,93 +379,19 @@ async def run_research(
 
 
 # --------------------------------------------------------------------------
-# 取数
+# 装配
 # --------------------------------------------------------------------------
 
 
-async def _resolve_stock(
-    key: str, providers: ProviderBundle, recorder: RunRecorder
-) -> StockRef:
-    res = await providers.market.search_ticker(key)
-    recorder.record_tool(
-        "search_ticker", {"q": key}, res.status, res.provider, note=res.note
-    )
-    if not res.ok or not res.value:
-        raise ResearchError(
-            "stock_not_found",
-            f"未能识别标的：{key}",
-            res.note or "请确认输入的是 A 股公司名称或代码。",
-        )
-    top = res.value[0]
-    return StockRef(
-        name=top.name, thscode=top.thscode, ticker=top.ticker, exchange=top.exchange
-    )
-
-
-async def _fetch_trading_days(
-    providers: ProviderBundle, recorder: RunRecorder
-) -> List[str]:
-    res = await providers.market.trading_days()
-    recorder.record_tool(
-        "trading_days", {}, res.status, res.provider, note=res.note
-    )
-    if not res.ok or not res.value:
-        raise ResearchError(
-            "no_calendar",
-            "交易日历不可用，无法确定研究日期。",
-            res.note or "",
-        )
-    return res.value
-
-
-async def _fetch_bars(
-    fetch, code: str, start: str, end: str, recorder: RunRecorder, tool: str, label: str
-) -> Tuple[List[Bar], Optional[DataGap]]:
-    res = await fetch(code, start, end)
-    recorder.record_tool(
-        tool, {"thscode": code, "start": start, "end": end},
-        res.status, res.provider, note=res.note,
-    )
-    if not res.ok or not res.value:
-        return [], DataGap(
-            field=tool,
-            reason=f"{label}取数失败：{res.note}",
-            impact="相关层级的比较与形态判断无法完成",
-            source=res.source,
-        )
-    return res.value, None
-
-
-async def _index_performance(
-    providers: ProviderBundle,
-    recorder: RunRecorder,
+def _register_index_fact(
     ledger: EvidenceLedger,
+    providers: ProviderBundle,
     code: str,
     name: str,
     window_days: List[str],
-    lookback_start: str,
-    tool_suffix: str,
-) -> Tuple[Optional[float], Optional[str], Optional[DataGap]]:
-    bars, gap = await _fetch_bars(
-        providers.market.index_daily_bars,
-        code,
-        lookback_start,
-        window_days[-1],
-        recorder,
-        f"index_daily_bars_{tool_suffix}",
-        f"{name} 指数日 K",
-    )
-    if gap:
-        return None, None, gap
-
-    selected = [b for b in bars if b.date in set(window_days)]
-    cum = _cumulative(selected)
-    if cum is None:
-        return None, None, DataGap(
-            field=f"index_{tool_suffix}",
-            reason=f"{name} 在研究窗口内没有完整的日 K 数据",
-            impact="无法计算该层级的区间涨跌",
-        )
+    cum: float,
+    selected: List[Bar],
+) -> str:
     evidence = ledger.register_market_fact(
         claim=f"{name}（{code}）在 {window_days[0]} ~ {window_days[-1]} 的区间累计涨跌为 {presenter.pct(cum)}",
         source=f"{providers.labels['market']} · 指数日 K",
@@ -543,56 +401,7 @@ async def _index_performance(
         caliber="区间末收盘价 / 区间首日前收盘价 - 1",
         raw_ref={"thscode": code, "bars": [b.model_dump() for b in selected]},
     )
-    return cum, evidence.id, None
-
-
-async def _collect_clues(
-    providers: ProviderBundle,
-    recorder: RunRecorder,
-    ledger: EvidenceLedger,
-    thscode: str,
-) -> List[str]:
-    res = await providers.market.anomaly_reasons([thscode])
-    recorder.record_tool(
-        "anomaly_reasons", {"thscodes": thscode}, res.status, res.provider, note=res.note
-    )
-    if not res.ok or not res.value:
-        return []
-    return register_clue_pool(ledger, res.value, getattr(providers.market, "name", "unknown"))
-
-
-def _cumulative(bars: List[Bar]) -> Optional[float]:
-    usable = [b for b in bars if b.close is not None and b.prev_close not in (None, 0)]
-    if not usable:
-        return None
-    return usable[-1].close / usable[0].prev_close - 1
-
-
-# --------------------------------------------------------------------------
-# 装配
-# --------------------------------------------------------------------------
-
-
-def _build_price_profiles(window_bars, history_bars, window, settings):
-    daily_profile = None
-    window_profile = None
-    if window == ResearchWindow.TODAY and window_bars:
-        daily_profile = build_daily_profile(
-            window_bars[-1], history_bars, settings.turnover_baseline_days
-        )
-        cum = daily_profile.pct_change
-    else:
-        cum = _cumulative(window_bars)
-    window_profile = build_window_profile(
-        window_bars,
-        concentration_threshold=settings.single_day_concentration_threshold,
-        consistency_threshold=settings.direction_consistency_threshold,
-        path_efficiency_threshold=settings.path_efficiency_threshold,
-        reversal_min_segment_pct=settings.reversal_min_segment_pct,
-    )
-    if cum is None:
-        cum = window_profile.cumulative_pct
-    return cum, daily_profile, window_profile
+    return evidence.id
 
 
 def _build_reasoner(providers: ProviderBundle, recorder: RunRecorder):
@@ -918,3 +727,159 @@ def _apply_guardrails(brief: ResearchBrief, recorder: RunRecorder) -> None:
         brief.disclaimers.append(
             f"本次输出中有 {len(hits)} 处表述被合规护栏拦截并替换。"
         )
+
+
+SNAPSHOT_FOLLOWUP = "若需要完整异动分析报告，请直接说明。"
+
+
+async def run_snapshot(
+    request: ResearchRequest,
+    providers: ProviderBundle,
+    settings: Settings,
+    recorder: RunRecorder,
+) -> ResearchBrief:
+    """简单 query：只识别标的、取日历和日 K，不检索资讯、不调用模型。"""
+    recorder.step("resolve", "running")
+    parsed = parse_query(request.query)
+    key = request.search_key or parsed.search_key
+    window = request.window or parsed.window
+    if not key:
+        recorder.step("resolve", "failed")
+        raise ResearchError(
+            "no_stock",
+            "没有识别出股票名称或代码。",
+            "请输入 A 股公司名称或 6 位代码。",
+        )
+    if window is None:
+        recorder.step("resolve", "failed")
+        raise NeedsWindowChoice(
+            "need_window",
+            "识别到股票，但没有指定研究窗口。",
+            "请先确认研究窗口：今日 / 最近 3 个交易日 / 最近 5 个交易日。确认后先为您做行情快照。",
+        )
+
+    stock, trading_days = await asyncio.gather(
+        resolve_stock(key, providers, recorder),
+        fetch_trading_days(providers, recorder),
+    )
+    resolution = resolve_window(
+        window, trading_days, baseline_days=settings.turnover_baseline_days
+    )
+    if resolution is None:
+        recorder.step("resolve", "failed")
+        raise ResearchError(
+            "no_calendar",
+            "交易日历数据不足，无法确定研究窗口。",
+            "该窗口需要的交易日数量超出了当前可用的日历范围。",
+        )
+    recorder.step(
+        "resolve",
+        "done",
+        f"{stock.name} {stock.thscode}，"
+        f"窗口 {resolution.info.actual_start} ~ {resolution.info.actual_end}",
+    )
+
+    recorder.step("quote", "running")
+    stock_bars, stock_gap = await _fetch_bars(
+        providers.market.daily_bars,
+        stock.thscode,
+        resolution.lookback_start,
+        resolution.info.actual_end,
+        recorder,
+        "daily_bars",
+        f"{stock.name} 日 K",
+    )
+    if not stock_bars:
+        recorder.step("quote", "failed")
+        raise ResearchError(
+            "no_price_data",
+            f"无法获取 {stock.name} 的行情数据，研究无法继续。",
+            stock_gap.reason if stock_gap else "",
+        )
+    window_days = set(resolution.window_days)
+    window_bars = [bar for bar in stock_bars if bar.date in window_days]
+    history_bars = [bar for bar in stock_bars if bar.date < resolution.info.actual_start]
+    if resolution.info.is_intraday and window_bars:
+        window_bars[-1].is_intraday = True
+    recorder.step("quote", "done", f"取得 {len(stock_bars)} 根日 K")
+
+    recorder.step("profile", "running")
+    stock_cum, daily_profile, window_profile = _build_price_profiles(
+        window_bars, history_bars, window, settings
+    )
+    gaps: List[DataGap] = []
+    if stock_gap:
+        gaps.append(stock_gap)
+    if window_profile:
+        gaps.extend(window_profile.gaps)
+    if daily_profile:
+        gaps.extend(daily_profile.gaps)
+
+    industry = IndustryInfo(
+        method="unavailable",
+        method_label="快照未查询行业",
+        note="行情快照不检索行业与资讯。",
+    )
+    comparison = build_comparison(
+        stock_pct=stock_cum,
+        industry_pct=None,
+        market_pct=None,
+        window_label=resolution.info.label,
+    )
+    what_happened = _build_what_happened(
+        daily_profile,
+        window_profile,
+        comparison,
+        industry,
+        window_bars,
+        stock,
+        resolution.info.label,
+        "",
+        gaps,
+    )
+    recorder.step("profile", "done")
+
+    brief = ResearchBrief(
+        run_id=recorder.run_id,
+        created_at=now_iso(),
+        kind="snapshot",
+        subject=SubjectSection(
+            stock=stock,
+            user_question=request.query,
+            window=resolution.info,
+            resolved_note=resolution.info.remap_note,
+        ),
+        what_happened=what_happened,
+        why_happened=WhyHappenedSection(
+            priority=ResearchPriority.COMPANY_FIRST,
+            priority_label="行情快照",
+            priority_reason="本次为快速查询，未展开异动归因。",
+        ),
+        what_it_means=WhatItMeansSection(
+            overall=OverallVerdict(
+                direction=ImpactDirection.UNCERTAIN,
+                display="本次为行情快照，未形成基本面判断。",
+                reason=SNAPSHOT_FOLLOWUP,
+                can_summarize=False,
+            ),
+            note=SNAPSHOT_FOLLOWUP,
+        ),
+        open_questions=OpenQuestionsSection(questions=[], gaps=gaps),
+        evidence=[],
+        metrics=RunMetrics(
+            time_to_verifiable_insight_ms=recorder.elapsed_ms(),
+            tool_calls=len(recorder.tool_calls),
+            failed_tool_calls=recorder.failed_tool_calls,
+            degraded=providers.degraded,
+        ),
+        trace=ResearchTrace(
+            tool_calls=recorder.tool_calls,
+            llm_calls=recorder.llm_calls,
+            providers=providers.labels,
+        ),
+        disclaimers=guardrails.DISCLAIMERS
+        + guardrails.degraded_notice(providers.labels, "")
+        + [SNAPSHOT_FOLLOWUP],
+    )
+    brief.what_happened.summary, _ = guardrails.sanitize(brief.what_happened.summary)
+    return brief

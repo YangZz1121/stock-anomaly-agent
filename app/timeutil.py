@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 from typing import Optional
 
 SHANGHAI = timezone(timedelta(hours=8))
@@ -48,6 +49,7 @@ def shift_days(day: str, delta: int) -> str:
     return d.strftime(DATE_FMT)
 
 
+@lru_cache(maxsize=4096)
 def parse_date(value: str) -> Optional[date]:
     for fmt in (DATE_FMT, COMPACT_FMT, "%Y/%m/%d"):
         try:

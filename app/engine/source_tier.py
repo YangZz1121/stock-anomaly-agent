@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from app.contracts import EvidenceKind, SourceTier
@@ -45,6 +46,7 @@ _KIND_BY_MARKER: Sequence[Tuple[Tuple[str, ...], EvidenceKind]] = (
 )
 
 
+@lru_cache(maxsize=512)
 def classify_tier(source_name: str, hint: Optional[str] = None) -> SourceTier:
     """按来源名判级；``hint`` 来自数据源自带的等级提示，优先采用。"""
     if hint:

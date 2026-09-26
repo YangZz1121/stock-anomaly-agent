@@ -21,17 +21,14 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.chat import gate_intent, run_chat
 from app.config import get_settings
 from app.contracts import ResearchWindow, WINDOW_LABELS
 from app.engine import guardrails
-from app.orchestrator import (
-    NeedsWindowChoice,
-    ResearchError,
-    ResearchRequest,
-    run_research,
-)
-from app.providers.registry import build_providers
-from app.trace import PROGRESS_STEPS, RunRecorder
+from app.engine.intent import IntentKind, estimate_report_minutes, notice_text
+from app.errors import NeedsWindowChoice, ResearchError
+from app.providers.registry import build_providers, describe_providers
+from app.trace import PROGRESS_STEPS, SNAPSHOT_STEPS, RunRecorder
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -57,12 +54,11 @@ async def health() -> Dict[str, Any]:
 async def config() -> Dict[str, Any]:
     """前端启动时拉取运行状态，用于展示降级横幅。"""
     settings = get_settings()
-    providers = build_providers(settings)
-    await providers.aclose()
+    status = describe_providers(settings)
     return {
-        "providers": providers.labels,
-        "degraded": providers.degraded,
-        "notices": guardrails.degraded_notice(providers.labels, ""),
+        "providers": status.labels,
+        "degraded": status.degraded,
+        "notices": guardrails.degraded_notice(status.labels, ""),
         "disclaimers": guardrails.DISCLAIMERS,
         "windows": [
             {"value": w.value, "label": WINDOW_LABELS[w.value]} for w in ResearchWindow
@@ -79,15 +75,13 @@ async def config() -> Dict[str, Any]:
 
 @app.post("/api/research")
 async def research(payload: ResearchPayload) -> JSONResponse:
+    intent = _classify_or_http_error(payload.query, payload.window)
     settings = get_settings()
     providers = build_providers(settings, faults=set(payload.faults or []))
     recorder = RunRecorder(_run_id())
     try:
-        brief = await run_research(
-            ResearchRequest(query=payload.query, window=payload.window),
-            providers,
-            settings,
-            recorder,
+        result = await run_chat(
+            payload.query, payload.window, providers, settings, recorder
         )
     except NeedsWindowChoice as exc:
         raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
@@ -95,7 +89,15 @@ async def research(payload: ResearchPayload) -> JSONResponse:
         raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
     finally:
         await providers.aclose()
-    return JSONResponse(content=json.loads(brief.model_dump_json()))
+    if len(result.briefs) == 1:
+        return JSONResponse(content=json.loads(result.briefs[0].model_dump_json()))
+    return JSONResponse(
+        content={
+            "kind": "bundle",
+            "briefs": [json.loads(item.model_dump_json()) for item in result.briefs],
+            "tasks": result.tasks,
+        }
+    )
 
 
 @app.get("/api/research/stream")
@@ -117,17 +119,41 @@ async def research_stream(
 
 
 async def _stream(query: str, window: Optional[ResearchWindow], faults: set):
+    try:
+        intent = gate_intent(query, window)
+    except (NeedsWindowChoice, ResearchError) as exc:
+        yield _sse("error", _error_body(exc))
+        yield _sse("done", {})
+        return
+
     settings = get_settings()
     providers = build_providers(settings, faults=faults)
     queue: asyncio.Queue = asyncio.Queue()
     recorder = RunRecorder(_run_id(), queue)
+    task = None
 
-    yield _sse("start", {"run_id": recorder.run_id, "steps": PROGRESS_STEPS})
+    if intent.wants_full_report:
+        minutes = estimate_report_minutes(
+            window or intent.parsed.window, len(intent.parsed.search_keys)
+        )
+        yield _sse(
+            "notice",
+            {"message": notice_text(minutes), "minutes": minutes},
+        )
+
+    steps = SNAPSHOT_STEPS if intent.kind == IntentKind.SNAPSHOT else PROGRESS_STEPS
+    yield _sse(
+        "start",
+        {
+            "run_id": recorder.run_id,
+            "steps": steps,
+            "kind": intent.kind.value,
+            "tasks": [{"key": key, "label": key} for key in intent.parsed.search_keys],
+        },
+    )
 
     task = asyncio.create_task(
-        run_research(
-            ResearchRequest(query=query, window=window), providers, settings, recorder
-        )
+        run_chat(query, window, providers, settings, recorder)
     )
 
     try:
@@ -143,15 +169,15 @@ async def _stream(query: str, window: Optional[ResearchWindow], faults: set):
 
             drain.cancel()
             if task in done:
-                # 研究已结束，把队列里剩下的进度事件排空后再发最终结果
                 while not queue.empty():
                     event = queue.get_nowait()
                     yield _sse(event["event"], event["data"])
                 break
             yield _sse("heartbeat", {"elapsed_ms": recorder.elapsed_ms()})
 
-        brief = task.result()
-        yield _sse("brief", json.loads(brief.model_dump_json()))
+        result = task.result()
+        for brief in result.briefs:
+            yield _sse("brief", json.loads(brief.model_dump_json()))
     except (NeedsWindowChoice, ResearchError) as exc:
         yield _sse("error", _error_body(exc))
     except Exception as exc:  # pragma: no cover - 兜底，避免连接悬挂
@@ -164,10 +190,19 @@ async def _stream(query: str, window: Optional[ResearchWindow], faults: set):
             },
         )
     finally:
-        if not task.done():
+        if task is not None and not task.done():
             task.cancel()
         await providers.aclose()
         yield _sse("done", {})
+
+
+def _classify_or_http_error(query: str, window: Optional[ResearchWindow]):
+    try:
+        return gate_intent(query, window)
+    except NeedsWindowChoice as exc:
+        raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
+    except ResearchError as exc:
+        raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
 
 
 def _sse(event: str, data: Any) -> str:

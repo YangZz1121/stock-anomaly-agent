@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
@@ -131,7 +132,7 @@ class EvidenceCollector:
         result = CollectionResult(window=window)
         all_events: List[RawEvent] = []
 
-        for scope in scopes:
+        async def _search(scope: str):
             query = _build_query(scope, stock_name, industry_name, clue_keywords)
             started = time.perf_counter()
             res = await self._provider.search_events(
@@ -143,10 +144,13 @@ class EvidenceCollector:
                 context={
                     "stock_name": stock_name,
                     "industry_name": industry_name,
-                    # 市场 / 宏观范围没有实体约束，其余范围必须命中实体
                     "required_terms": _required_terms(scope, stock_name, industry_name),
                 },
             )
+            return scope, query, res, int((time.perf_counter() - started) * 1000)
+
+        searched = await asyncio.gather(*[_search(scope) for scope in scopes])
+        for scope, query, res, latency_ms in searched:
             self._recorder.record_tool(
                 "search_events",
                 {
@@ -157,7 +161,7 @@ class EvidenceCollector:
                 },
                 res.status,
                 res.provider,
-                latency_ms=int((time.perf_counter() - started) * 1000),
+                latency_ms=latency_ms,
                 note=res.note,
             )
             result.scopes_searched.append(scope)

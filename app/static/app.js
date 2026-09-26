@@ -21,7 +21,7 @@ const state = {
 const EXAMPLES = [
   { q: "宁德时代最近5个交易日怎么一直跌？", w: "d5" },
   { q: "贵州茅台今天为什么跌了？", w: "today" },
-  { q: "伊利股份今天为什么大跌？", w: "today" },
+  { q: "宁德时代和贵州茅台今天异动对比", w: "today" },
 ];
 
 async function init() {
@@ -118,6 +118,7 @@ function resetThread() {
   state.evidenceById = {};
   $("evidenceBtn").disabled = true;
   $("traceBtn").disabled = true;
+  state.brief = null;
   $("queryInput").value = "";
   autosize();
   paintThread();
@@ -148,6 +149,9 @@ function run(presetQuery) {
     steps: [],
     elapsed: "0.0s",
     brief: null,
+    briefs: [],
+    notice: "",
+    taskLabel: "",
     error: null,
   });
   $("queryInput").value = "";
@@ -169,9 +173,23 @@ function run(presetQuery) {
   const source = new EventSource(`/api/research/stream?${params}`);
   state.source = source;
 
+  source.addEventListener("notice", (e) => {
+    const msg = state.messages.find((m) => m.id === aid);
+    if (!msg) return;
+    msg.notice = JSON.parse(e.data).message || "";
+    paintAssistant(aid);
+  });
   source.addEventListener("start", (e) => {
     const msg = state.messages.find((m) => m.id === aid);
     if (msg) msg.steps = JSON.parse(e.data).steps.map((s) => ({ ...s, state: "pending" }));
+    paintAssistant(aid);
+  });
+  source.addEventListener("task", (e) => {
+    const data = JSON.parse(e.data);
+    const msg = state.messages.find((m) => m.id === aid);
+    if (!msg) return;
+    msg.taskLabel = `正在处理：${data.label}（${data.index + 1}/${data.total}）`;
+    if (msg.steps) msg.steps.forEach((s) => { s.state = "pending"; s.detail = ""; });
     paintAssistant(aid);
   });
   source.addEventListener("step", (e) => {
@@ -187,8 +205,10 @@ function run(presetQuery) {
     const msg = state.messages.find((m) => m.id === aid);
     if (!msg) return;
     msg.phase = "brief";
+    msg.briefs = msg.briefs || [];
+    msg.briefs.push(brief);
     msg.brief = brief;
-    adoptBrief(brief);
+    adoptBriefs(msg.briefs);
     paintAssistant(aid);
   });
   source.addEventListener("error", (e) => {
@@ -209,12 +229,15 @@ function finish(source) {
   $("runBtn").disabled = false;
 }
 
-function adoptBrief(brief) {
-  state.brief = brief;
+function adoptBriefs(briefs) {
+  const list = briefs || [];
+  const report = [...list].reverse().find((b) => b.kind !== "snapshot") || list[list.length - 1];
+  state.brief = report || null;
   state.evidenceById = {};
-  brief.evidence.forEach((e) => (state.evidenceById[e.id] = e));
-  $("evidenceBtn").disabled = false;
-  $("traceBtn").disabled = false;
+  list.forEach((b) => (b.evidence || []).forEach((e) => { state.evidenceById[e.id] = e; }));
+  const hasEvidence = list.some((b) => (b.evidence || []).length);
+  $("evidenceBtn").disabled = !hasEvidence;
+  $("traceBtn").disabled = !report;
 }
 
 function paintThread() {
@@ -274,19 +297,31 @@ function revealMessage(id) {
 function renderReply(m) {
   if (m.phase === "thinking") return renderThinking(m);
   if (m.phase === "error") return renderError(m.error);
-  if (m.phase === "brief") return renderBriefHtml(m.brief, m.id);
+  if (m.phase === "brief") {
+    const briefs = m.briefs && m.briefs.length ? m.briefs : (m.brief ? [m.brief] : []);
+    return briefs.map((brief, i) =>
+      renderBriefHtml(brief, `${m.id}-${i}`, briefs.length > 1)
+    ).join("");
+  }
   return "";
 }
 
 function renderThinking(m) {
+  if (!(m.steps || []).length && !m.notice) {
+    return `<div class="plain-card"><p>正在理解您的问题…</p></div>`;
+  }
+  const notice = m.notice ? `<div class="think-notice">${esc(m.notice)}</div>` : "";
+  const task = m.taskLabel ? `<p class="think-task">${esc(m.taskLabel)}</p>` : "";
   const steps = (m.steps || []).map((s) => {
     const mark = s.state === "done" ? "✓" : s.state === "running" ? "→" : s.state === "failed" ? "×" : "○";
     return `<li class="${s.state || ""}"><span>${mark}</span><span>${esc(s.label)}</span>
       <span class="detail">${esc(s.detail || "")}</span></li>`;
   }).join("");
   return `<div class="think">
+    ${notice}
     <div class="think-head"><span><i class="dot"></i>正在研究</span>
       <span data-elapsed="${m.id}">${esc(m.elapsed || "0.0s")}</span></div>
+    ${task}
     <ul class="steps">${steps}</ul>
   </div>`;
 }
@@ -298,15 +333,23 @@ function renderError(err) {
           .map(([v, l]) => `<button type="button" data-win="${v}">${l}</button>`).join("")
       }</div>`
     : "";
+  const calm = err && (err.code === "nonsense" || err.code === "need_stock");
+  if (calm) {
+    return `<div class="plain-card">
+      <p>${esc(err.message || "")}</p>
+      ${err.hint ? `<p class="hint">${esc(err.hint)}</p>` : ""}
+    </div>`;
+  }
   return `<div class="error-card">
     <h2>${esc(err.message || "研究未能完成")}</h2>
     <p>${esc(err.hint || "")}</p>${actions}
   </div>`;
 }
 
-function renderBriefHtml(brief, mid) {
+function renderBriefHtml(brief, mid, split) {
   const s = brief.subject;
   const w = brief.what_happened;
+  const snapshot = brief.kind === "snapshot";
   const dates = s.window.actual_start === s.window.actual_end
     ? s.window.actual_end
     : `${s.window.actual_start} ~ ${s.window.actual_end}`;
@@ -314,41 +357,25 @@ function renderBriefHtml(brief, mid) {
   if (s.window.remap_note) notes.push(s.window.remap_note);
   if (s.window.is_intraday) notes.push("当前为盘中数据，部分指标不可用。");
   const met = brief.metrics;
+  const kicker = split
+    ? `<div class="company-kicker">${esc(s.stock.name)} · ${esc(s.stock.thscode)}</div>`
+    : "";
 
-  return `<article class="brief">
-    <section class="hero">
-      <div class="hero-top">
-        <div>
-          <h2>${esc(s.stock.name)}</h2>
-          <div class="code">${esc(s.stock.thscode)}</div>
-        </div>
-        <div class="hero-meta">${esc(s.window.label)}<br>${esc(dates)}</div>
-      </div>
-      <p class="hero-lead">${esc(w.summary)}</p>
-      ${notes.length ? `<p class="remap">${esc(notes.join(" "))}</p>` : ""}
-      <div class="metrics">
-        ${[
+  const heroMetrics = snapshot
+    ? ""
+    : `<div class="metrics">${
+        [
           ["可验证洞察", (met.time_to_verifiable_insight_ms / 1000).toFixed(1) + "s"],
           ["证据覆盖", pctStr(met.evidence_coverage)],
           ["无证据推断", pctStr(met.unsupported_inference_rate)],
           ["证据条目", String(met.evidence_count)],
           ["独立信源", String(met.independent_source_count)],
-        ].map(([k, v]) => `<div class="metric"><span>${k}</span><b>${esc(v)}</b></div>`).join("")}
-      </div>
-    </section>
+        ].map(([k, v]) => `<div class="metric"><span>${k}</span><b>${esc(v)}</b></div>`).join("")
+      }</div>`;
 
-    <section class="block">
-      <h3>价格怎么走</h3>
-      <div class="chart-wrap"><svg class="chart" id="chart-${mid}" viewBox="0 0 720 228" preserveAspectRatio="none"></svg></div>
-      <div class="chart-legend" id="legend-${mid}"></div>
-      <div class="measure-grid">${w.measures.map(measureCard).join("")}</div>
-      <div class="pattern"><b>形态：${esc(w.pattern_label)}</b>
-        <p>${esc(w.pattern_reason)}</p>
-        <p>所属行业：${esc(w.industry.index_name || "未识别")}（${esc(w.industry.method_label)}）
-          ${w.industry.is_weak_evidence ? " · 弱证据" : ""}</p>
-      </div>
-    </section>
-
+  const rest = snapshot
+    ? `<p class="disclaimer">若需要完整异动分析报告，请直接说明。</p>`
+    : `
     <section class="block">
       <h3>和市场、行业比</h3>
       ${compareHtml(w.comparison)}
@@ -392,7 +419,35 @@ function renderBriefHtml(brief, mid) {
     <div class="follow">
       <button type="button" data-act="evidence">查看证据链</button>
       <button type="button" data-act="trace">查看研究过程</button>
-    </div>
+    </div>`;
+
+  return `<article class="brief ${snapshot ? "snapshot" : ""}">
+    ${kicker}
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <h2>${esc(s.stock.name)}</h2>
+          <div class="code">${esc(s.stock.thscode)}</div>
+        </div>
+        <div class="hero-meta">${esc(s.window.label)}<br>${esc(dates)}</div>
+      </div>
+      <p class="hero-lead">${esc(w.summary)}</p>
+      ${notes.length ? `<p class="remap">${esc(notes.join(" "))}</p>` : ""}
+      ${heroMetrics}
+    </section>
+
+    <section class="block">
+      <h3>价格怎么走</h3>
+      <div class="chart-wrap"><svg class="chart" id="chart-${mid}" viewBox="0 0 720 228" preserveAspectRatio="none"></svg></div>
+      <div class="chart-legend" id="legend-${mid}"></div>
+      <div class="measure-grid">${w.measures.map(measureCard).join("")}</div>
+      <div class="pattern"><b>形态：${esc(w.pattern_label)}</b>
+        <p>${esc(w.pattern_reason)}</p>
+        ${snapshot ? "" : `<p>所属行业：${esc(w.industry.index_name || "未识别")}（${esc(w.industry.method_label)}）
+          ${w.industry.is_weak_evidence ? " · 弱证据" : ""}</p>`}
+      </div>
+    </section>
+    ${rest}
   </article>`;
 }
 
@@ -542,8 +597,14 @@ function bindReply(root) {
       if (lastUser) run(lastUser.text);
     });
   });
-  state.messages.filter((m) => m.phase === "brief" && m.brief).forEach((m) => {
-    if (root.querySelector(`#chart-${m.id}`)) drawChart(`chart-${m.id}`, `legend-${m.id}`, m.brief.what_happened.series);
+  state.messages.filter((m) => m.phase === "brief").forEach((m) => {
+    const briefs = m.briefs && m.briefs.length ? m.briefs : (m.brief ? [m.brief] : []);
+    briefs.forEach((brief, i) => {
+      const id = `${m.id}-${i}`;
+      if (root.querySelector(`#chart-${id}`)) {
+        drawChart(`chart-${id}`, `legend-${id}`, brief.what_happened.series);
+      }
+    });
   });
 }
 

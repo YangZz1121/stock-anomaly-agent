@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
-from typing import List, Optional, Tuple
+from functools import lru_cache
+from typing import Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.contracts import ResearchWindow, WINDOW_LABELS, WINDOW_TRADING_DAYS
 from app.schemas import WindowInfo
@@ -44,22 +47,38 @@ _NOISE_WORDS = [
     "大跌", "大涨", "跌停", "涨停", "跌了", "涨了", "下跌", "上涨", "跌", "涨",
     "帮我", "请", "分析", "研究", "看看", "查", "一下", "的", "了", "吗", "呢",
     "股价", "股票", "走势", "异动", "原因", "发生", "什么", "回撤", "重挫",
-    "走弱", "走强", "拉升", "得", "是", "在", "和", "与",
+    "走弱", "走强", "拉升", "得", "是", "在", "和", "与", "以及", "及",
+    "对比", "完整", "撰写", "一份", "报告", "行情", "多少", "快照", "请问",
+    "相比", "比较", "写",
 ]
 
 _CJK = re.compile(r"[\u4e00-\u9fa5A-Za-z]{2,}")
+_PUNCT = re.compile(r"[\d.。，,！!？?、；;：:\"'“”‘’()（）\[\]【】《》\-—_/\\|~]+")
 
 
 class ParsedQuery(BaseModel):
     raw: str
     code: Optional[str] = None
+    codes: List[str] = Field(default_factory=list)
     name_hint: Optional[str] = None
+    name_hints: List[str] = Field(default_factory=list)
     window: Optional[ResearchWindow] = None
     direction_hint: Optional[str] = None
 
     @property
     def search_key(self) -> Optional[str]:
-        return self.code or self.name_hint
+        keys = self.search_keys
+        return keys[0] if keys else None
+
+    @property
+    def search_keys(self) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for key in list(self.codes) + list(self.name_hints):
+            if key and key not in seen:
+                seen.add(key)
+                out.append(key)
+        return out
 
 
 def parse_query(text: str) -> ParsedQuery:
@@ -68,7 +87,8 @@ def parse_query(text: str) -> ParsedQuery:
     if not raw:
         return parsed
 
-    parsed.code = _extract_code(raw)
+    parsed.codes = _extract_codes(raw)
+    parsed.code = parsed.codes[0] if parsed.codes else None
 
     for pattern, window in _WINDOW_PATTERNS:
         if pattern.search(raw):
@@ -80,32 +100,141 @@ def parse_query(text: str) -> ParsedQuery:
             parsed.direction_hint = hint
             break
 
-    parsed.name_hint = _extract_name(raw)
+    parsed.name_hints = _extract_names(raw)
+    parsed.name_hint = parsed.name_hints[0] if parsed.name_hints else None
     return parsed
 
 
-def _extract_code(text: str) -> Optional[str]:
+def canonicalize_name(text: str) -> str:
+    """把口语/简称映射到检索用的正式名称；没有命中则原样返回。"""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    aliases = load_aliases()
+    direct = aliases.get(raw) or aliases.get(raw.lower())
+    if direct:
+        return direct
+    mapped, _ = _scan_aliases(raw)
+    return mapped[0] if mapped else raw
+
+
+def _extract_codes(text: str) -> List[str]:
+    occupied = [False] * len(text)
+    codes: List[str] = []
     for i, pattern in enumerate(_CODE_PATTERNS):
-        m = pattern.search(text)
-        if not m:
-            continue
-        if i == 0:
-            return f"{m.group(1)}.{m.group(2).upper()}"
-        if i == 1:
-            return f"{m.group(2)}.{m.group(1).upper()}"
-        return m.group(1)  # 纯 6 位代码，交由检索接口补后缀
-    return None
+        for match in pattern.finditer(text):
+            if any(occupied[j] for j in range(match.start(), match.end())):
+                continue
+            for j in range(match.start(), match.end()):
+                occupied[j] = True
+            if i == 0:
+                codes.append(f"{match.group(1)}.{match.group(2).upper()}")
+            elif i == 1:
+                codes.append(f"{match.group(2)}.{match.group(1).upper()}")
+            else:
+                codes.append(match.group(1))
+    return codes
 
 
-def _extract_name(text: str) -> Optional[str]:
-    cleaned = text
+def _extract_names(text: str) -> List[str]:
+    mapped, spans = _scan_aliases(text)
+    masked = _mask_spans(text, spans)
+    for pattern in _CODE_PATTERNS:
+        masked = pattern.sub(" ", masked)
+    cleaned = masked
     for word in _NOISE_WORDS:
         cleaned = cleaned.replace(word, " ")
-    cleaned = re.sub(r"[\d.。，,！!？?、；;：:\"'“”‘’()（）\[\]【】《》\-—_/\\|~]+", " ", cleaned)
-    candidates = _CJK.findall(cleaned)
-    if not candidates:
-        return None
-    return max(candidates, key=len)
+    cleaned = _PUNCT.sub(" ", cleaned)
+    leftovers: List[str] = []
+    greetings = {"你好", "您好", "哈喽", "嗨", "hello", "hi", "hey", "哈哈", "哈哈哈", "测试", "test"}
+    aliases = load_aliases()
+    for token in _CJK.findall(cleaned):
+        if token.lower() in greetings:
+            continue
+        if token.isascii() and token not in aliases and token.lower() not in aliases:
+            continue
+        leftovers.append(canonicalize_name(token))
+    return _dedupe(mapped + leftovers)
+
+
+def _mask_spans(text: str, spans: List[Tuple[int, int]]) -> str:
+    if not spans:
+        return text
+    chars = list(text)
+    for start, end in spans:
+        for i in range(start, end):
+            chars[i] = " "
+    return "".join(chars)
+
+
+def _dedupe(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for item in items:
+        key = item.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+@lru_cache(maxsize=1)
+def load_aliases() -> Dict[str, str]:
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    path = os.path.join(root, "fixtures", "market", "aliases.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        return {}
+    aliases: Dict[str, str] = {}
+    for key, value in data.items():
+        if not key or not value:
+            continue
+        aliases[str(key)] = str(value)
+        if str(key).isascii():
+            aliases[str(key).lower()] = str(value)
+    return aliases
+
+
+def _alias_pairs() -> List[Tuple[str, str]]:
+    # 每个正式映射只保留原始大小写键，避免 CATL / catl 扫两遍
+    seen = set()
+    pairs: List[Tuple[str, str]] = []
+    for key, value in load_aliases().items():
+        marker = key.lower()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        pairs.append((key, value))
+    pairs.sort(key=lambda item: len(item[0]), reverse=True)
+    return pairs
+
+
+def _scan_aliases(text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
+    names: List[str] = []
+    spans: List[Tuple[int, int]] = []
+    if not text:
+        return names, spans
+    pairs = _alias_pairs()
+    i = 0
+    n = len(text)
+    while i < n:
+        hit: Optional[Tuple[str, int]] = None
+        for key, canon in pairs:
+            end = i + len(key)
+            if end <= n and text[i:end].lower() == key.lower():
+                hit = (canon, end)
+                break
+        if hit:
+            names.append(hit[0])
+            spans.append((i, hit[1]))
+            i = hit[1]
+        else:
+            i += 1
+    return names, spans
 
 
 # --------------------------------------------------------------------------

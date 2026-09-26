@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.config import Settings
 from app.contracts import FetchStatus, Fetched
@@ -17,6 +17,9 @@ from app.providers.base import RawEvent
 from app.timeutil import is_within
 
 MOCK_NOTE = "构造演示证据，非真实资讯"
+
+# path -> 已经切好词的事件列表，避免每次检索重复分词
+_INDEXED_EVENTS: Dict[str, List[Tuple[Dict[str, Any], Set[str]]]] = {}
 
 
 class MockEvidenceProvider:
@@ -33,19 +36,36 @@ class MockEvidenceProvider:
             else os.path.join(root, base, "evidence", "events.json")
         )
         self._faults = faults or set()
-        self._events: Optional[List[Dict[str, Any]]] = None
 
     async def aclose(self) -> None:
         return None
 
-    def _load(self) -> List[Dict[str, Any]]:
-        if self._events is None:
-            if os.path.exists(self._path):
-                with open(self._path, "r", encoding="utf-8") as fh:
-                    self._events = json.load(fh).get("events", [])
-            else:
-                self._events = []
-        return self._events
+    def _load(self) -> List[Tuple[Dict[str, Any], Set[str]]]:
+        cached = _INDEXED_EVENTS.get(self._path)
+        if cached is not None:
+            return cached
+        events: List[Dict[str, Any]] = []
+        if os.path.exists(self._path):
+            with open(self._path, "r", encoding="utf-8") as fh:
+                events = json.load(fh).get("events", [])
+        indexed = [
+            (
+                ev,
+                _tokenize(
+                    " ".join(
+                        [
+                            ev.get("title", ""),
+                            ev.get("summary", ""),
+                            " ".join(ev.get("keywords") or []),
+                            " ".join(ev.get("related_names") or []),
+                        ]
+                    )
+                ),
+            )
+            for ev in events
+        ]
+        _INDEXED_EVENTS[self._path] = indexed
+        return indexed
 
     async def search_events(
         self,
@@ -70,22 +90,12 @@ class MockEvidenceProvider:
         required_tokens = [_tokenize(t) for t in required]
 
         hits: List[RawEvent] = []
-        for ev in self._load():
+        for ev, haystack in self._load():
             if ev.get("scope") and scope and ev["scope"] != scope:
                 continue
             published = (ev.get("published_at") or "")[:10]
             if published and not is_within(published, start_date, end_date):
                 continue
-            haystack = _tokenize(
-                " ".join(
-                    [
-                        ev.get("title", ""),
-                        ev.get("summary", ""),
-                        " ".join(ev.get("keywords") or []),
-                        " ".join(ev.get("related_names") or []),
-                    ]
-                )
-            )
             if required_tokens and not any(rt & haystack for rt in required_tokens):
                 continue
             if not required_tokens and terms and not (terms & haystack):

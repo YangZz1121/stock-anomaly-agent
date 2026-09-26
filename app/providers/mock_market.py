@@ -16,6 +16,20 @@ from app.providers.base import AnomalyReason, Bar, IndexInfo, TickerInfo
 
 MOCK_NOTE = "构造演示数据，非真实行情"
 
+_FIXTURE_FILES: Dict[str, Any] = {}
+
+
+def _read_fixture(path: str) -> Optional[Dict[str, Any]]:
+    if path in _FIXTURE_FILES:
+        return _FIXTURE_FILES[path]
+    if not os.path.exists(path):
+        _FIXTURE_FILES[path] = None
+        return None
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    _FIXTURE_FILES[path] = data
+    return data
+
 
 class MockMarketProvider:
     name = "mock"
@@ -25,7 +39,6 @@ class MockMarketProvider:
     ) -> None:
         self._dir = _resolve_fixtures_dir(settings.fixtures_dir)
         self._faults = faults or set()
-        self._cache: Dict[str, Any] = {}
 
     async def aclose(self) -> None:
         return None
@@ -33,16 +46,7 @@ class MockMarketProvider:
     # ------------------------------------------------------------------
 
     def _load(self, rel: str) -> Optional[Dict[str, Any]]:
-        if rel in self._cache:
-            return self._cache[rel]
-        path = os.path.join(self._dir, rel)
-        if not os.path.exists(path):
-            self._cache[rel] = None
-            return None
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        self._cache[rel] = data
-        return data
+        return _read_fixture(os.path.join(self._dir, rel))
 
     def _fault(self, key: str, source: str) -> Optional[Fetched]:
         if key in self._faults:
