@@ -68,6 +68,7 @@ def check_timing(cluster: ClusterInfo, ctx: MarketContext) -> DriverCheck:
         )
 
     day = published[:10]
+    has_time = _TIME_RE.search(published) is not None
     after_close = _is_after_close(published) and day >= ew.core_end
 
     if day > ew.core_end or after_close:
@@ -77,6 +78,18 @@ def check_timing(cluster: ClusterInfo, ctx: MarketContext) -> DriverCheck:
             CheckResult.FAIL,
             f"事件发布时间为 {published}，{when}，"
             f"不能用来解释 {ew.core_end} 及之前已经发生的价格变化。",
+        )
+
+    # 数据源只给到日期时，当天发布的消息究竟在收盘前还是收盘后无从判断。
+    # 默认它能解释当天的价格变化等于凭空补了一个事实，所以降级为部分成立。
+    if not has_time and day >= ew.core_end:
+        return _check(
+            "timing",
+            CheckResult.PARTIAL,
+            f"事件发布日期为 {day}，与研究窗口末日同一天，"
+            f"但数据源只提供到日期、没有具体时间，无法确认它发布于 "
+            f"{_MARKET_CLOSE} 收盘之前还是之后，"
+            f"因此不能确定它先于当日价格变化发生。",
         )
 
     if cluster.in_core_window:

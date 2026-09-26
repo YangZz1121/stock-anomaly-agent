@@ -7,11 +7,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional, Sequence
 
 import pytest
 
-from app.config import Settings
+# 必须在任何模块读取配置之前就把数据源锁死。
+# 本机 .env 里有真实密钥，不锁的话测试会打真实接口——那样测试既慢又不确定，
+# 而且结论会随当天行情变化，完全失去回归价值。
+# 环境变量优先级高于 .env，所以这里设一次就够。
+os.environ["MARKET_PROVIDER"] = "mock"
+os.environ["EVIDENCE_PROVIDER"] = "mock"
+os.environ["LLM_PROVIDER"] = "mock"
+
+from app.config import Settings  # noqa: E402
 from app.contracts import ResearchWindow
 from app.orchestrator import ResearchRequest, run_research
 from app.providers.registry import build_providers

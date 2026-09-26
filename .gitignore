@@ -1,8 +1,11 @@
 # 密钥绝不入库
 .env
 .env.local
+.env.backup
 *.key
 secrets.json
+# iFinD 的 MCP 客户端配置，headers 里带 Authorization
+.mcp.json
 
 # 运行产物
 .cache/
