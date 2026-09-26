@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     static_cache_ttl_hours: int = 12
     # 日 K 进程缓存。历史区间几乎不变；含当日的请求用较短 TTL。
     bars_cache_ttl_seconds: int = 180
+    # Agent 环：规划 → 调用工具 → 观察，最多走多少步。启发式主路径约 8 步。
+    agent_max_steps: int = 12
+    # 首次检索之后，规划器最多还能追加几次检索（失败重试 + 反向证据）。
+    agent_extra_search_limit: int = 2
 
     def resolved_market_provider(self) -> str:
         if self.market_provider != "auto":

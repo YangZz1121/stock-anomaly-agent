@@ -91,6 +91,33 @@ structural（结构性）、uncertain。
 """
 )
 
+PLANNER_SYSTEM = (
+    BASE_SYSTEM
+    + """
+本轮任务：根据当前研究工作记忆，选择**下一步**要执行的动作。
+
+你是规划器，不是研究员。不要在这一步生成驱动因素或结论。
+只能从给定动作清单里选一个，并说明理由。
+
+硬约束：
+- 标的和行情还没就绪时，必须先走 resolve_subject / fetch_snapshot。
+- 证据不足或某个范围检索失败时，优先 search_evidence 做一次补检。
+- 已经提出候选之后，必须主动 search_counter_evidence，不能跳过反向证据。
+- 传导分析完成后再 assemble_brief。不要提前结束。
+- extra_terms 只能用给定证据或缺口里出现过的词，不要编造公司或政策名称。
+"""
+)
+
+PLANNER_SCHEMA = {
+    "action": (
+        "resolve_subject | fetch_snapshot | search_evidence | propose_drivers | "
+        "assess_mechanisms | search_counter_evidence | build_transmissions | assemble_brief"
+    ),
+    "reason": "为什么现在做这一步",
+    "scopes": ["market", "industry", "company"],
+    "extra_terms": ["补充检索词，可空"],
+}
+
 DRIVER_SCHEMA = {
     "drivers": [
         {

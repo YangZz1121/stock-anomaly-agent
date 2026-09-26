@@ -280,7 +280,7 @@ function paintThread() {
     box.innerHTML = `
       <div class="greeting">
         <h1>这只股票，发生了什么？</h1>
-        <p>用一句自然语言提问。我会把价格变化说清楚，再把原因和证据摊开，而不是给买卖建议。</p>
+        <p>输入公司名称或代码。报告按行情事实、驱动因素、基本面含义展开，结论可回溯到证据，不做买卖建议。</p>
       </div>
       <div class="suggest">
         ${EXAMPLES.map((e) =>
@@ -386,6 +386,16 @@ function renderError(err) {
   </div>`;
 }
 
+function sectionHead(num, title, desc) {
+  return `<header class="sec-head">
+    <span class="sec-num">${esc(num)}</span>
+    <div>
+      <h3>${esc(title)}</h3>
+      ${desc ? `<p class="sec-desc">${esc(desc)}</p>` : ""}
+    </div>
+  </header>`;
+}
+
 function renderBriefHtml(brief, mid, split) {
   const s = brief.subject;
   const w = brief.what_happened;
@@ -395,67 +405,76 @@ function renderBriefHtml(brief, mid, split) {
     : `${s.window.actual_start} ~ ${s.window.actual_end}`;
   const notes = [];
   if (s.window.remap_note) notes.push(s.window.remap_note);
-  if (s.window.is_intraday) notes.push("当前为盘中数据，部分指标不可用。");
-  const met = brief.metrics;
+  if (s.window.is_intraday) notes.push("当前为盘中数据，部分指标暂不可用。");
   const kicker = split
     ? `<div class="company-kicker">${esc(s.stock.name)} · ${esc(s.stock.thscode)}</div>`
     : "";
 
-  const heroMetrics = snapshot
-    ? ""
-    : `<div class="metrics">${
-        [
-          ["可验证洞察", (met.time_to_verifiable_insight_ms / 1000).toFixed(1) + "s"],
-          ["证据覆盖", pctStr(met.evidence_coverage)],
-          ["无证据推断", pctStr(met.unsupported_inference_rate)],
-          ["证据条目", String(met.evidence_count)],
-          ["独立信源", String(met.independent_source_count)],
-        ].map(([k, v]) => `<div class="metric"><span>${k}</span><b>${esc(v)}</b></div>`).join("")
-      }</div>`;
+  const takeaways = [
+    ["价格形态", w.pattern_label],
+  ];
+  if (!snapshot) {
+    takeaways.push(["调查路径", brief.why_happened.priority_label]);
+    takeaways.push(["基本面含义", brief.what_it_means.overall.display]);
+  }
+  const takeawayHtml = `<div class="takeaways" aria-label="报告要点">${
+    takeaways.map(([k, v]) =>
+      `<div class="takeaway"><span>${esc(k)}</span><b>${esc(v)}</b></div>`
+    ).join("")
+  }</div>`;
 
   const rest = snapshot
-    ? `<p class="disclaimer">若需要完整异动分析报告，请直接说明。</p>`
+    ? `<p class="disclaimer">以上为行情事实快照。如需完整异动分析——含驱动因素验证与基本面含义——请直接说明。</p>`
     : `
     <section class="block">
-      <h3>和市场、行业比</h3>
+      ${sectionHead("02", "相对表现", "对照市场与行业，只用于确定调查路径，不做贡献拆分。")}
       ${compareHtml(w.comparison)}
       <p class="disclaimer">${esc(w.comparison.disclaimer)}</p>
-      ${gapsHtml(w.gaps, "这一段缺的数据")}
+      ${gapsHtml(w.gaps, "行情数据缺口")}
     </section>
 
     <section class="block">
-      <h3>为什么会这样</h3>
-      <div class="priority"><b>${esc(brief.why_happened.priority_label)}</b>
-        <p>${esc(brief.why_happened.priority_reason)}</p></div>
-      <p class="hint">${esc(brief.why_happened.evidence_window_note)}</p>
+      ${sectionHead("03", "驱动因素", "候选原因须通过时间、横截面、特异性、机制四项验证后，才进入结论。")}
+      <div class="priority">
+        <span class="priority-kicker">调查路径</span>
+        <b>${esc(brief.why_happened.priority_label)}</b>
+        <p>${esc(brief.why_happened.priority_reason)}</p>
+      </div>
+      ${brief.why_happened.evidence_window_note
+        ? `<p class="hint">${esc(brief.why_happened.evidence_window_note)}</p>` : ""}
       ${brief.why_happened.drivers.length
         ? brief.why_happened.drivers.map(renderDriver).join("")
-        : `<p class="hint">这次没有形成候选驱动因素。</p>`}
+        : `<p class="empty-note">本次未形成通过验证门槛的候选驱动因素。</p>`}
       ${brief.why_happened.clue_pool.length
-        ? `<p class="hint">检索线索（不作为结论）：${brief.why_happened.clue_pool.map(esc).join("、")}</p>`
+        ? `<div class="clue-box"><span class="subhead">检索线索</span>
+            <p>仅作检索方向，不作为结论依据：${brief.why_happened.clue_pool.map(esc).join("、")}</p></div>`
         : ""}
-      ${gapsHtml(brief.why_happened.gaps, "证据检索的缺口")}
+      ${gapsHtml(brief.why_happened.gaps, "证据检索缺口")}
     </section>
 
     <section class="block">
-      <h3>对公司意味着什么</h3>
-      <div class="overall"><b>${esc(brief.what_it_means.overall.display)}</b>
-        <p>${esc(brief.what_it_means.overall.reason)}</p></div>
+      ${sectionHead("04", "基本面含义", "判断对象是公司经营，不是未来股价；各因素独立评估，不做百分比归因。")}
+      <div class="overall">
+        <span class="priority-kicker">总体判断</span>
+        <b>${esc(brief.what_it_means.overall.display)}</b>
+        <p>${esc(brief.what_it_means.overall.reason)}</p>
+      </div>
       ${renderAssessments(brief)}
       <p class="disclaimer">${esc(brief.what_it_means.note)}</p>
     </section>
 
     <section class="block">
-      <h3>现在还不知道的</h3>
+      ${sectionHead("05", "待观察事项", "证据不足时列出未知，作为研究结果输出，不强行补全结论。")}
       <p class="hint">${esc(brief.open_questions.note)}</p>
-      <ul class="open-list">${
-        brief.open_questions.questions.length
-          ? brief.open_questions.questions.map((q) => `<li>${esc(q)}</li>`).join("")
-          : `<li class="hint">这次没有遗留未解决问题。</li>`
-      }</ul>
-      ${gapsHtml(brief.open_questions.gaps, "全部数据缺口")}
+      ${renderOpenQuestions(brief.open_questions.questions)}
+      ${gapsHtml(brief.open_questions.gaps, "数据缺口")}
     </section>
 
+    ${qualityStrip(brief)}
+    ${(brief.disclaimers || []).length
+      ? `<div class="legal-box"><span class="subhead">声明</span><ul>${
+          brief.disclaimers.map((d) => `<li>${esc(d)}</li>`).join("")
+        }</ul></div>` : ""}
     <div class="follow">
       <button type="button" data-act="evidence">查看证据链</button>
       <button type="button" data-act="trace">查看研究过程</button>
@@ -464,31 +483,57 @@ function renderBriefHtml(brief, mid, split) {
   return `<article class="brief ${snapshot ? "snapshot" : ""}">
     ${kicker}
     <section class="hero">
+      <div class="doc-type">${snapshot ? "行情快照" : "个股异动分析"}</div>
       <div class="hero-top">
         <div>
           <h2>${esc(s.stock.name)}</h2>
           <div class="code">${esc(s.stock.thscode)}</div>
         </div>
-        <div class="hero-meta">${esc(s.window.label)}<br>${esc(dates)}</div>
+        <div class="hero-meta">
+          <span>${esc(s.window.label)}</span>
+          <span>${esc(dates)}</span>
+        </div>
       </div>
       <p class="hero-lead">${esc(w.summary)}</p>
       ${notes.length ? `<p class="remap">${esc(notes.join(" "))}</p>` : ""}
-      ${heroMetrics}
+      ${takeawayHtml}
     </section>
 
     <section class="block">
-      <h3>价格怎么走</h3>
+      ${sectionHead("01", "行情事实", "量化价格变化，并给出可复核的形态判断。")}
       <div class="chart-wrap"><svg class="chart" id="chart-${mid}" viewBox="0 0 720 228" preserveAspectRatio="none"></svg></div>
       <div class="chart-legend" id="legend-${mid}"></div>
       <div class="measure-grid">${w.measures.map(measureCard).join("")}</div>
-      <div class="pattern"><b>形态：${esc(w.pattern_label)}</b>
+      <div class="pattern">
+        <span class="priority-kicker">形态判断</span>
+        <b>${esc(w.pattern_label)}</b>
         <p>${esc(w.pattern_reason)}</p>
-        ${snapshot ? "" : `<p>所属行业：${esc(w.industry.index_name || "未识别")}（${esc(w.industry.method_label)}）
-          ${w.industry.is_weak_evidence ? " · 弱证据" : ""}</p>`}
       </div>
+      ${snapshot ? "" : `<div class="fact-meta">
+        <span>所属行业</span>
+        <b>${esc(w.industry.index_name || "未识别")}</b>
+        <span>${esc(w.industry.method_label)}${w.industry.is_weak_evidence ? " · 弱证据" : ""}</span>
+      </div>`}
     </section>
     ${rest}
   </article>`;
+}
+
+function qualityStrip(brief) {
+  const met = brief.metrics || {};
+  const items = [
+    ["证据覆盖", pctStr(met.evidence_coverage || 0)],
+    ["证据条目", String(met.evidence_count || 0)],
+    ["独立信源", String(met.independent_source_count || 0)],
+    ["研究耗时", ((met.time_to_verifiable_insight_ms || 0) / 1000).toFixed(1) + "s"],
+    ["无证据推断", pctStr(met.unsupported_inference_rate || 0)],
+  ];
+  return `<section class="block quality">
+    ${sectionHead("附", "研究质量", "过程指标，用于核验本次研究是否可追溯；不构成对价格或基本面的判断。")}
+    <div class="metrics">${
+      items.map(([k, v]) => `<div class="metric"><span>${k}</span><b>${esc(v)}</b></div>`).join("")
+    }</div>
+  </section>`;
 }
 
 function measureCard(m) {
@@ -528,16 +573,17 @@ function renderDriver(d) {
       <div class="d-title">
         <h4>${esc(d.name)}</h4>
         <p class="d-sum">${esc(d.summary)}</p>
-        <p class="d-sum">相关程度：${esc(d.relevance)}</p>
+        ${d.relevance ? `<p class="d-rel"><span>与本次异动的关联</span>${esc(d.relevance)}</p>` : ""}
       </div>
       <span class="tag cat">${esc(d.category_label)}</span>
       <span class="tag ${d.status}">${esc(d.status_label)}</span>
     </div>
     <div class="driver-body">
+      <span class="subhead">四项验证</span>
       <div class="checks">${d.checks.map(renderCheck).join("")}</div>
       ${refBlock("支持证据", d.supporting_refs)}
-      ${refBlock("反向证据", d.contradicting_refs, "本次检索未找到反向证据，不代表不存在。")}
-      ${d.unresolved.length ? `<h3>该因素仍未解决的问题</h3>
+      ${refBlock("反向证据", d.contradicting_refs, "本次检索未发现反向证据，不代表不存在。")}
+      ${d.unresolved.length ? `<span class="subhead">待核实</span>
         <ul class="unresolved">${d.unresolved.map((u) => `<li>${esc(u)}</li>`).join("")}</ul>` : ""}
     </div>
   </div>`;
@@ -555,9 +601,9 @@ function renderCheck(c) {
 
 function refBlock(title, refs, empty = "无") {
   if (!refs || !refs.length) {
-    return `<h3>${esc(title)}</h3><p class="hint">${esc(empty)}</p>`;
+    return `<span class="subhead">${esc(title)}</span><p class="hint">${esc(empty)}</p>`;
   }
-  return `<h3>${esc(title)}</h3><ul class="ref-list">${refs.map((r) => {
+  return `<span class="subhead">${esc(title)}</span><ul class="ref-list">${refs.map((r) => {
     const ev = state.evidenceById[r.evidence_id] || {};
     return `<li>
       <div class="r-head">
@@ -575,37 +621,71 @@ function refBlock(title, refs, empty = "无") {
 function renderAssessments(brief) {
   const assessed = brief.why_happened.drivers.filter((d) => d.assessment);
   if (!assessed.length) {
-    return `<p class="hint">没有驱动因素达到进入基本面分析的证据门槛。</p>`;
+    return `<p class="empty-note">没有驱动因素达到进入基本面分析的证据门槛。</p>`;
   }
   return assessed.map((d) => {
     const a = d.assessment;
     return `<div class="assessment">
       <div class="a-head">
         <h4>${esc(d.name)}</h4>
-        <span class="headline ${a.display_suppressed ? "suppressed" : ""}">${esc(a.display_headline)}</span>
+      </div>
+      <div class="verdict-pills ${a.display_suppressed ? "suppressed" : ""}">
+        <div><span>影响方向</span><b>${esc(a.display_direction)}</b></div>
+        <div><span>影响期限</span><b>${esc(a.display_horizon)}</b></div>
+        <div><span>证据强度</span><b>${esc(a.display_strength)}</b></div>
       </div>
       ${a.display_suppressed ? `<div class="suppression">${esc(a.suppression_reason || "")}</div>` : ""}
       <div class="exposure ${a.exposure_level === "unconfirmed" ? "unconfirmed" : ""}">
-        <span class="e-key">公司暴露</span>${esc(a.exposure_label)}　${esc(a.exposure_basis)}
+        <span class="e-key">公司暴露</span>
+        <b>${esc(a.exposure_label)}</b>
+        <p>${esc(a.exposure_basis)}</p>
       </div>
-      <h3>基本面传导链</h3>
-      <ul class="chain">${a.chain.map((s) =>
+      <span class="subhead">传导路径</span>
+      <ol class="chain">${a.chain.map((s) =>
         `<li class="${s.is_conditional ? "conditional" : ""}">${esc(s.text)}
           ${s.is_conditional ? `<span class="cond-tag">条件性推断</span>` : ""}</li>`
-      ).join("")}</ul>
+      ).join("")}</ol>
+      <span class="subhead">情景因素</span>
       <div class="factor-cols">
         ${factorCol("抵消因素", a.offsetting_factors)}
         ${factorCol("放大因素", a.amplifying_factors)}
         ${factorCol("关键未知", a.key_unknowns)}
       </div>
+      <span class="subhead">判断依据</span>
       <div class="reasons">
-        <div><span class="r-key">为什么是这个方向</span>${esc(a.direction_reason || "—")}</div>
-        <div><span class="r-key">为什么是这个期限</span>${esc(a.horizon_reason || "—")}</div>
-        <div><span class="r-key">证据强度如何得出</span>${esc(a.strength_reason || "—")}</div>
+        <div><span class="r-key">方向</span>${esc(a.direction_reason || "—")}</div>
+        <div><span class="r-key">期限</span>${esc(a.horizon_reason || "—")}</div>
+        <div><span class="r-key">证据强度</span>${esc(a.strength_reason || "—")}</div>
       </div>
       ${refBlock("公司暴露证据", a.exposure_refs)}
     </div>`;
   }).join("");
+}
+
+function renderOpenQuestions(questions) {
+  if (!questions || !questions.length) {
+    return `<p class="empty-note">本次没有遗留待观察事项。</p>`;
+  }
+  const groups = [];
+  const index = new Map();
+  questions.forEach((q) => {
+    const m = String(q).match(/^【([^】]+)】(.*)$/);
+    if (m) {
+      if (!index.has(m[1])) {
+        const g = { title: m[1], items: [] };
+        index.set(m[1], g);
+        groups.push(g);
+      }
+      index.get(m[1]).items.push(m[2]);
+      return;
+    }
+    groups.push({ title: "", items: [q] });
+  });
+  return groups.map((g) => `
+    <div class="q-group">
+      ${g.title ? `<h4>${esc(g.title)}</h4>` : ""}
+      <ul class="open-list">${g.items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
+    </div>`).join("");
 }
 
 function factorCol(title, items) {
@@ -618,7 +698,7 @@ function factorCol(title, items) {
 
 function gapsHtml(gaps, title) {
   if (!gaps || !gaps.length) return "";
-  return `<div class="gaps"><h3>${esc(title)}</h3>` +
+  return `<div class="gaps"><span class="subhead">${esc(title)}</span>` +
     gaps.map((g) => `<div class="gap"><b>${esc(g.field)}</b>：${esc(g.reason)}
       <p>影响：${esc(g.impact)}</p></div>`).join("") + `</div>`;
 }

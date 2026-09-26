@@ -60,3 +60,75 @@ def test_extract_model_empty_does_not_invent_from_leftover():
 
     keys = asyncio.run(resolve_company_keys("不存在的公司今天跌了", EmptyLLM()))
     assert keys == []
+
+
+def test_full_legal_name_matches_listed_company():
+    hit = match_company("宁德时代新能源科技股份有限公司")
+    assert hit is not None
+    assert hit.record.name == "宁德时代"
+    assert bind_companies(["贵州茅台酒股份有限公司"]) == ["贵州茅台"]
+
+
+def test_empty_model_still_finds_company_in_query():
+    class EmptyLLM:
+        name = "fake"
+        model = "unit"
+
+        async def complete_json(self, purpose, system, user, schema_hint=None):
+            return Fetched.success({"companies": []}, "llm:fake", "fake")
+
+    keys = asyncio.run(resolve_company_keys("宁德时代新能源科技股份有限公司今天为什么跌了", EmptyLLM()))
+    assert keys == ["宁德时代"]
+
+
+def test_model_full_name_still_binds_to_catalog():
+    class FullNameLLM:
+        name = "fake"
+        model = "unit"
+
+        async def complete_json(self, purpose, system, user, schema_hint=None):
+            return Fetched.success(
+                {"companies": ["宁德时代新能源科技股份有限公司"]},
+                "llm:fake",
+                "fake",
+            )
+
+    keys = asyncio.run(resolve_company_keys("看看这只股票怎么了", FullNameLLM()))
+    assert keys == ["宁德时代"]
+
+
+def test_model_unknown_listed_company_is_kept_as_search_key():
+    class OutsideLLM:
+        name = "fake"
+        model = "unit"
+
+        async def complete_json(self, purpose, system, user, schema_hint=None):
+            return Fetched.success({"companies": ["澜起科技"]}, "llm:fake", "fake")
+
+    keys = asyncio.run(resolve_company_keys("澜起科技今天为什么跌了", OutsideLLM()))
+    assert keys == ["澜起科技"]
+
+
+def test_classify_full_legal_name_is_not_missing_param():
+    intent = classify_intent("宁德时代新能源科技股份有限公司", None)
+    assert intent.kind == IntentKind.NEED_WINDOW
+    assert intent.parsed.search_keys == ["宁德时代"]
+
+
+def test_catalog_covers_a_share_and_hong_kong():
+    from collections import Counter
+
+    from app.engine.company_index import load_company_catalog
+
+    records = load_company_catalog()
+    markets = Counter(
+        record.thscode.split(".")[-1] for record in records if "." in record.thscode
+    )
+    assert len(records) > 7000
+    assert markets["SH"] > 2000
+    assert markets["SZ"] > 2000
+    assert markets["BJ"] > 200
+    assert markets["HK"] > 2000
+    assert match_company("澜起科技").record.thscode == "688008.SH"
+    assert match_company("腾讯").record.thscode == "00700.HK"
+    assert match_company("阿里巴巴").record.thscode == "09988.HK"

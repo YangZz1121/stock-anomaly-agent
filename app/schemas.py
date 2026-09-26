@@ -211,7 +211,9 @@ class WhatItMeansSection(BaseModel):
 class OpenQuestionsSection(BaseModel):
     questions: List[str] = Field(default_factory=list)
     gaps: List[DataGap] = Field(default_factory=list)
-    note: str = "「不知道」是研究结果的一部分，而不是失败。"
+    note: str = (
+        "待观察事项是研究结果的一部分：证据不足以支撑判断时明确列出，不强行补全。"
+    )
 
 
 class RunMetrics(BaseModel):
@@ -226,13 +228,24 @@ class RunMetrics(BaseModel):
     independent_source_count: int = 0
     tool_calls: int = 0
     failed_tool_calls: int = 0
+    agent_steps: int = 0
     degraded: bool = False  # 是否有任何降级 / 缺口
+
+
+class AgentStep(BaseModel):
+    """Agent 环里的一步：规划器选出的动作，以及它为什么选这一步。"""
+
+    seq: int
+    action: str
+    reason: str = ""
 
 
 class ResearchTrace(BaseModel):
     tool_calls: List[ToolCall] = Field(default_factory=list)
     llm_calls: List[Dict[str, Any]] = Field(default_factory=list)
     providers: Dict[str, str] = Field(default_factory=dict)
+    plan: List[str] = Field(default_factory=list)
+    agent_steps: List[AgentStep] = Field(default_factory=list)
 
 
 class ResearchBrief(BaseModel):

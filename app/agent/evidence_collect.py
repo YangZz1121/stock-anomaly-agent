@@ -185,6 +185,78 @@ class EvidenceCollector:
         result.clue_pool = clue_keywords
         return result
 
+    async def collect_scope(
+        self,
+        *,
+        result: CollectionResult,
+        window: EvidenceWindow,
+        scope: str,
+        stock_name: str,
+        industry_name: Optional[str],
+        extra_terms: Optional[List[str]] = None,
+    ) -> CollectionResult:
+        """对单个范围再检索一次，新事件合并进已有结果。
+
+        已登记过的 claim 会被跳过，避免二次检索把同一条新闻再变成新驱动因素。
+        """
+        query = _build_query(scope, stock_name, industry_name, extra_terms or [])
+        started = time.perf_counter()
+        res = await self._provider.search_events(
+            query=query,
+            start_date=window.extended_start,
+            end_date=window.core_end,
+            scope=scope,
+            limit=20,
+            context={
+                "stock_name": stock_name,
+                "industry_name": industry_name,
+                "required_terms": _required_terms(scope, stock_name, industry_name),
+            },
+        )
+        self._recorder.record_tool(
+            "search_events",
+            {
+                "scope": scope,
+                "query": query,
+                "start": window.extended_start,
+                "end": window.core_end,
+                "pass": "additional",
+            },
+            res.status,
+            res.provider,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            note=res.note,
+        )
+        if scope not in result.scopes_searched:
+            result.scopes_searched.append(scope)
+        if not res.ok:
+            result.gaps.append(
+                DataGap(
+                    field=f"evidence.{scope}",
+                    reason=f"{SCOPE_LABELS.get(scope, scope)}范围的补充检索未返回结果：{res.note}",
+                    impact=f"无法补充{SCOPE_LABELS.get(scope, scope)}层面的证据",
+                    source=res.source,
+                )
+            )
+            return result
+
+        fresh = []
+        for event in res.value or []:
+            event.scope = event.scope or scope
+            claim = f"{event.title}｜{event.summary}" if event.summary else event.title
+            if self._ledger.claim_id(claim) is None:
+                fresh.append(event)
+        if fresh:
+            result.clusters.extend(self._register(fresh, window))
+            result.clusters.sort(
+                key=lambda c: (
+                    not c.in_core_window,
+                    _tier_rank(c.best_tier),
+                    -c.independent_sources,
+                )
+            )
+        return result
+
     # ------------------------------------------------------------------
 
     def _register(

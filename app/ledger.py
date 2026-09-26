@@ -42,6 +42,10 @@ class EvidenceLedger:
         # cluster_id -> 该聚类下出现过的 origin_key 集合
         self._cluster_origins: Dict[str, set] = {}
 
+    def claim_id(self, claim: str) -> Optional[str]:
+        """同一 claim 是否已经登记过。二次检索用来跳过重复事件。"""
+        return self._claim_index.get(normalize_claim(claim))
+
     # ------------------------------------------------------------------
     # 登记
     # ------------------------------------------------------------------
@@ -63,8 +67,7 @@ class EvidenceLedger:
         caliber: Optional[str] = None,
     ) -> Evidence:
         """登记一条证据。同一 claim 重复登记时复用已有编号。"""
-        norm = normalize_claim(claim)
-        existing_id = self._claim_index.get(norm)
+        existing_id = self.claim_id(claim)
         if existing_id is not None:
             existing = self._items[existing_id]
             # 重复登记时，保留可信度更高的来源
@@ -77,6 +80,7 @@ class EvidenceLedger:
 
         self._seq += 1
         eid = f"E{self._seq}"
+        norm = normalize_claim(claim)
         resolved_cluster = cluster_id or f"C{self._seq}"
         evidence = Evidence(
             id=eid,

@@ -9,7 +9,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from app.contracts import ResearchWindow
-from app.engine.company_index import bind_companies
+from app.engine.company_index import bind_companies, scan_query_for_companies
 from app.engine.resolver import ParsedQuery, parse_query
 
 _FULL_REPORT = re.compile(
@@ -115,7 +115,11 @@ def classify_intent(
         keys = [key for key in resolved_keys if key and key.strip().lower() not in _GREETINGS]
     else:
         keys = bind_companies(
-            [key for key in parsed.search_keys if key.strip().lower() not in _GREETINGS]
+            [
+                key
+                for key in list(parsed.search_keys) + scan_query_for_companies(raw)
+                if key.strip().lower() not in _GREETINGS
+            ]
         )
     inherited = False
     if not keys:
@@ -126,7 +130,7 @@ def classify_intent(
             )
             keys = fallback
             inherited = True
-    elif resolved_keys is not None:
+    elif keys:
         parsed = parsed.model_copy(
             update={"name_hints": keys, "name_hint": keys[0] if keys else None}
         )
