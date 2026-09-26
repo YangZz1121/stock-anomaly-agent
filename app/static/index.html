@@ -3,155 +3,69 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>个股异动研究 Agent</title>
+<title>异动研究</title>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+<div class="app">
 
-<header class="topbar">
-  <div class="wrap topbar-inner">
-    <div>
-      <h1>个股异动研究 Agent</h1>
-      <p class="tagline">发生了什么 → 为什么发生 → 对公司意味着什么</p>
-    </div>
-    <div class="provider-chips" id="providerChips"></div>
-  </div>
-</header>
-
-<div id="degradedBanner" class="banner hidden"></div>
-
-<main class="wrap">
-
-  <!-- 输入区 -->
-  <section class="card search-card">
-    <label class="field-label" for="queryInput">研究问题</label>
-    <div class="search-row">
-      <input id="queryInput" type="text" autocomplete="off"
-             placeholder="例如：宁德时代最近几天怎么一直跌？">
-      <button id="runBtn" class="primary">开始研究</button>
-    </div>
-
-    <div class="window-row">
-      <span class="field-label inline">研究窗口</span>
-      <div class="chips" id="windowChips"></div>
-      <span class="hint" id="windowHint">未选择时，将从你的问题中识别</span>
-    </div>
-
-    <details class="examples">
-      <summary>示例问题与故障演练</summary>
-      <div class="example-body">
-        <p class="hint">点击任一示例直接运行：</p>
-        <div class="chips" id="exampleChips"></div>
-        <p class="hint drill-hint">
-          故障演练：勾选后会人为让对应接口调用失败，用于验证产品在数据缺失时
-          是否显式暴露缺口，而不是静默生成"正常"结论。
-        </p>
-        <div class="chips" id="faultChips"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">研</div>
+      <div>
+        <div class="brand-name">异动研究</div>
+        <div class="brand-sub">发生了什么，为什么，意味着什么</div>
       </div>
-    </details>
-  </section>
-
-  <!-- 进度区 -->
-  <section class="card progress-card hidden" id="progressCard">
-    <div class="progress-head">
-      <h2>研究过程</h2>
-      <span class="elapsed" id="elapsed">0.0s</span>
     </div>
-    <ul class="steps" id="stepList"></ul>
-    <div class="logs" id="logList"></div>
-  </section>
+    <button class="new-chat" id="newChatBtn" type="button">新的提问</button>
+    <div class="side-label">可以这样问</div>
+    <div class="side-examples" id="sideExamples"></div>
+    <div class="side-spacer"></div>
+    <div class="side-status" id="sideStatus"></div>
+  </aside>
 
-  <!-- 错误区 -->
-  <section class="card error-card hidden" id="errorCard">
-    <h2 id="errorTitle"></h2>
-    <p id="errorHint"></p>
-    <div class="chips" id="errorActions"></div>
-  </section>
-
-  <!-- Brief -->
-  <div id="brief" class="hidden">
-
-    <!-- 区域一：研究对象 -->
-    <section class="card subject-card">
-      <div class="subject-head">
-        <div>
-          <h2 id="stockName"></h2>
-          <span class="code" id="stockCode"></span>
-        </div>
-        <div class="subject-meta">
-          <div><span class="meta-key">研究窗口</span><span id="windowLabel"></span></div>
-          <div><span class="meta-key">实际研究日期</span><span id="windowDates"></span></div>
-        </div>
+  <div class="stage">
+    <header class="stage-bar">
+      <button class="icon-btn" id="sidebarToggle" type="button" aria-label="打开菜单">☰</button>
+      <div class="stage-title">个股异动研究</div>
+      <div class="stage-actions">
+        <button class="ghost" id="evidenceBtn" type="button" disabled>证据链</button>
+        <button class="ghost" id="traceBtn" type="button" disabled>研究过程</button>
       </div>
-      <p class="user-question" id="userQuestion"></p>
-      <p class="remap-note hidden" id="remapNote"></p>
-      <div class="metrics" id="metricsStrip"></div>
-    </section>
+    </header>
 
-    <!-- 区域二：发生了什么 -->
-    <section class="card">
-      <h2 class="region"><span class="region-num">1</span>发生了什么</h2>
-      <p class="summary" id="whatSummary"></p>
-      <div class="measure-grid" id="measureGrid"></div>
+    <div class="banner hidden" id="degradedBanner"></div>
 
-      <div class="pattern-box" id="patternBox"></div>
+    <div class="thread" id="thread"></div>
 
-      <h3>市场 / 行业 / 个股</h3>
-      <div class="compare" id="compareBox"></div>
-      <p class="disclaimer" id="compareDisclaimer"></p>
-
-      <h3>价格走势</h3>
-      <div class="chart-wrap"><svg id="chart" viewBox="0 0 720 220" preserveAspectRatio="none"></svg></div>
-      <div class="chart-legend" id="chartLegend"></div>
-
-      <div id="whatGaps"></div>
-    </section>
-
-    <!-- 区域三：为什么发生 -->
-    <section class="card">
-      <h2 class="region"><span class="region-num">2</span>为什么发生</h2>
-      <div class="priority-box" id="priorityBox"></div>
-      <p class="hint" id="evidenceWindowNote"></p>
-      <div id="driverList"></div>
-      <div id="cluePool"></div>
-      <div id="whyGaps"></div>
-    </section>
-
-    <!-- 区域四：对公司意味着什么 -->
-    <section class="card">
-      <h2 class="region"><span class="region-num">3</span>这些原因对公司意味着什么</h2>
-      <div class="overall-box" id="overallBox"></div>
-      <div id="assessmentList"></div>
-      <p class="disclaimer" id="meansNote"></p>
-    </section>
-
-    <!-- 区域五：未解决的问题 -->
-    <section class="card open-card">
-      <h2 class="region"><span class="region-num">4</span>当前仍未解决的问题</h2>
-      <p class="hint" id="openNote"></p>
-      <ul class="open-list" id="openList"></ul>
-      <div id="openGaps"></div>
-    </section>
-
-    <!-- 抽屉入口 -->
-    <section class="card drawer-entry">
-      <button class="ghost" id="evidenceBtn">查看证据链</button>
-      <button class="ghost" id="traceBtn">查看研究过程</button>
-    </section>
-
-    <section class="card disclaimer-card">
-      <h3>产品边界</h3>
-      <ul id="disclaimerList"></ul>
-    </section>
+    <footer class="composer">
+      <div class="composer-card">
+        <div class="window-row" id="windowRow">
+          <span class="win-label">研究窗口</span>
+          <div class="chips" id="windowChips"></div>
+          <span class="win-hint" id="windowHint">不选时从问题里识别</span>
+        </div>
+        <div class="composer-row">
+          <textarea id="queryInput" rows="1" autocomplete="off"
+            placeholder="问一只股票最近为什么涨或跌，例如：宁德时代最近几天怎么一直跌？"></textarea>
+          <button id="runBtn" class="send" type="button" aria-label="发送">↑</button>
+        </div>
+        <details class="drill">
+          <summary>故障演练</summary>
+          <p class="hint">勾选后会人为让对应接口失败，用来验证产品会不会把缺口说出来。</p>
+          <div class="chips" id="faultChips"></div>
+        </details>
+      </div>
+      <p class="legal">研究结论，不是投资建议。不做买卖推荐，也不对股价做确定性预测。</p>
+    </footer>
   </div>
-</main>
+</div>
 
-<!-- 抽屉 -->
 <div class="drawer-backdrop hidden" id="drawerBackdrop"></div>
 <aside class="drawer hidden" id="drawer">
   <div class="drawer-head">
     <h2 id="drawerTitle"></h2>
-    <button class="ghost close" id="drawerClose">关闭</button>
+    <button class="ghost close" id="drawerClose" type="button">关闭</button>
   </div>
   <div class="drawer-body" id="drawerBody"></div>
 </aside>
