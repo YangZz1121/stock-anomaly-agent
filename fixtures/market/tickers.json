@@ -1,0 +1,34 @@
+{
+  "item": [
+    {
+      "thscode": "300750.SZ",
+      "name": "宁德时代",
+      "ticker": "300750",
+      "exchange": "SZSE"
+    },
+    {
+      "thscode": "600519.SH",
+      "name": "贵州茅台",
+      "ticker": "600519",
+      "exchange": "SSE"
+    },
+    {
+      "thscode": "600887.SH",
+      "name": "伊利股份",
+      "ticker": "600887",
+      "exchange": "SSE"
+    },
+    {
+      "thscode": "000858.SZ",
+      "name": "五粮液",
+      "ticker": "000858",
+      "exchange": "SZSE"
+    },
+    {
+      "thscode": "002594.SZ",
+      "name": "比亚迪",
+      "ticker": "002594",
+      "exchange": "SZSE"
+    }
+  ]
+}

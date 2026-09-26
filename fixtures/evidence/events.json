@@ -1,0 +1,225 @@
+{
+  "events": [
+    {
+      "event_id": "EVT-A1",
+      "title": "某出口目的地市场发布动力电池准入新规征求意见稿",
+      "summary": "征求意见稿拟提高进口动力电池的本地化含量与碳足迹披露要求，设置 18 个月过渡期，期满后不达标产品将无法获得市场准入。",
+      "published_at": "2026-09-23 19:40",
+      "source_name": "主管部门官方网站",
+      "source_tier_hint": "t1_authoritative",
+      "origin_key": "ORIGIN-POLICY-A1",
+      "cluster_hint": "CLS-BATTERY-POLICY",
+      "scope": "industry",
+      "keywords": [
+        "动力电池",
+        "准入",
+        "碳足迹",
+        "出口",
+        "电池"
+      ],
+      "related_names": [
+        "电池",
+        "动力电池",
+        "新能源车"
+      ]
+    },
+    {
+      "event_id": "EVT-A2",
+      "title": "海外动力电池准入新规征求意见，行业出口面临新门槛",
+      "summary": "财经媒体援引主管部门征求意见稿报道，新规对本地化含量提出明确要求，国内电池企业出口业务或受影响。",
+      "published_at": "2026-09-23 21:15",
+      "source_name": "财联社",
+      "source_tier_hint": "t2_professional",
+      "origin_key": "ORIGIN-POLICY-A1",
+      "cluster_hint": "CLS-BATTERY-POLICY",
+      "scope": "industry",
+      "keywords": [
+        "动力电池",
+        "准入",
+        "出口",
+        "电池"
+      ],
+      "related_names": [
+        "电池",
+        "动力电池"
+      ]
+    },
+    {
+      "event_id": "EVT-A3",
+      "title": "动力电池出口新规解读：过渡期 18 个月",
+      "summary": "转载并解读同一份征求意见稿，未提供新增独立信息。",
+      "published_at": "2026-09-24 08:05",
+      "source_name": "证券时报",
+      "source_tier_hint": "t2_professional",
+      "origin_key": "ORIGIN-POLICY-A1",
+      "cluster_hint": "CLS-BATTERY-POLICY",
+      "scope": "industry",
+      "keywords": [
+        "动力电池",
+        "出口",
+        "电池"
+      ],
+      "related_names": [
+        "电池"
+      ]
+    },
+    {
+      "event_id": "EVT-A4",
+      "title": "公司年度报告：境外营业收入占比 32.6%",
+      "summary": "年度报告显示，报告期内境外业务收入占营业总收入的 32.6%，主要来自动力电池产品出口。",
+      "published_at": "2026-09-21",
+      "source_name": "公司年度报告",
+      "source_tier_hint": "t1_authoritative",
+      "origin_key": "ORIGIN-FILING-CATL",
+      "cluster_hint": "CLS-CATL-EXPOSURE",
+      "scope": "company",
+      "keywords": [
+        "境外收入",
+        "出口",
+        "年报",
+        "占比"
+      ],
+      "related_names": [
+        "宁德时代"
+      ]
+    },
+    {
+      "event_id": "EVT-A5",
+      "title": "公司公告：与海外客户签署长期供货框架协议",
+      "summary": "公司公告与一家海外整车厂商签署为期五年的供货框架协议，约定产能预留与价格调整机制。",
+      "published_at": "2026-09-22",
+      "source_name": "公司公告",
+      "source_tier_hint": "t1_authoritative",
+      "origin_key": "ORIGIN-ANNOUNCE-CATL",
+      "cluster_hint": "CLS-CATL-CONTRACT",
+      "scope": "company",
+      "keywords": [
+        "长期协议",
+        "供货",
+        "海外客户",
+        "框架协议"
+      ],
+      "related_names": [
+        "宁德时代"
+      ]
+    },
+    {
+      "event_id": "EVT-A6",
+      "title": "网传某电池厂商海外订单大幅削减",
+      "summary": "社交平台流传的消息称某电池厂商海外订单被大幅削减，消息未注明原始出处，相关公司未作回应。",
+      "published_at": "2026-09-24 11:20",
+      "source_name": "社交平台匿名帖",
+      "source_tier_hint": "t4_unverified",
+      "origin_key": "ORIGIN-RUMOR-1",
+      "cluster_hint": "CLS-RUMOR-1",
+      "scope": "company",
+      "keywords": [
+        "订单",
+        "削减",
+        "海外",
+        "电池"
+      ],
+      "related_names": [
+        "宁德时代"
+      ]
+    },
+    {
+      "event_id": "EVT-B1",
+      "title": "隔夜外围主要股指普遍收跌",
+      "summary": "隔夜海外主要股指普遍下跌，风险资产整体承压，市场风险偏好回落。",
+      "published_at": "2026-09-25 08:30",
+      "source_name": "中国证券报",
+      "source_tier_hint": "t2_professional",
+      "origin_key": "ORIGIN-MACRO-1",
+      "cluster_hint": "CLS-RISK-OFF",
+      "scope": "market",
+      "keywords": [
+        "外围",
+        "股指",
+        "风险偏好",
+        "市场"
+      ],
+      "related_names": []
+    },
+    {
+      "event_id": "EVT-B2",
+      "title": "消费板块资金面走弱，白酒子板块承压",
+      "summary": "当日消费板块整体资金净流出，白酒等子板块跟随大盘调整。",
+      "published_at": "2026-09-25 15:30",
+      "source_name": "上海证券报",
+      "source_tier_hint": "t2_professional",
+      "origin_key": "ORIGIN-SECTOR-1",
+      "cluster_hint": "CLS-CONSUMER-WEAK",
+      "scope": "industry",
+      "keywords": [
+        "白酒",
+        "消费",
+        "资金"
+      ],
+      "related_names": [
+        "白酒",
+        "贵州茅台"
+      ]
+    },
+    {
+      "event_id": "EVT-C1",
+      "title": "公司公告：下修全年业绩预告",
+      "summary": "公司公告称，受原奶价格与渠道库存影响，将全年归母净利润预告区间下调，下调幅度为原区间中值的约 12%。",
+      "published_at": "2026-09-24 18:50",
+      "source_name": "公司公告",
+      "source_tier_hint": "t1_authoritative",
+      "origin_key": "ORIGIN-ANNOUNCE-YILI",
+      "cluster_hint": "CLS-YILI-GUIDANCE",
+      "scope": "company",
+      "keywords": [
+        "业绩预告",
+        "下修",
+        "净利润",
+        "原奶"
+      ],
+      "related_names": [
+        "伊利股份"
+      ]
+    },
+    {
+      "event_id": "EVT-C2",
+      "title": "乳制品板块午后走弱",
+      "summary": "盘后复盘文章，梳理当日乳制品板块表现。该文发布于收盘之后，不能作为解释当日价格变化的原因。",
+      "published_at": "2026-09-25 16:40",
+      "source_name": "某财经资讯站",
+      "source_tier_hint": "t3_general",
+      "origin_key": "ORIGIN-RECAP-1",
+      "cluster_hint": "CLS-YILI-RECAP",
+      "scope": "industry",
+      "keywords": [
+        "乳制品",
+        "板块",
+        "复盘"
+      ],
+      "related_names": [
+        "伊利股份",
+        "乳制品"
+      ]
+    },
+    {
+      "event_id": "EVT-C3",
+      "title": "公司年度报告：原奶采购以长期协议为主",
+      "summary": "年度报告披露，公司原奶采购中长期协议占比较高，并通过自有牧场覆盖部分需求。",
+      "published_at": "2026-09-21",
+      "source_name": "公司年度报告",
+      "source_tier_hint": "t1_authoritative",
+      "origin_key": "ORIGIN-FILING-YILI",
+      "cluster_hint": "CLS-YILI-EXPOSURE",
+      "scope": "company",
+      "keywords": [
+        "原奶",
+        "长期协议",
+        "采购",
+        "牧场"
+      ],
+      "related_names": [
+        "伊利股份"
+      ]
+    }
+  ]
+}
