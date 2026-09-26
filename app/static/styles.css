@@ -143,7 +143,7 @@ body {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 4px 8px 2px;
 }
-.win-label, .win-hint { font-size: 12px; color: var(--faint); }
+.win-label { font-size: 12px; color: var(--faint); }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip {
   background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);

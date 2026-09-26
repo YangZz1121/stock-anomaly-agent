@@ -103,7 +103,6 @@ function setWindow(value) {
   [...$("windowChips").children].forEach((c) =>
     c.classList.toggle("active", c.dataset.value === value)
   );
-  $("windowHint").textContent = value ? "已指定研究窗口" : "不选时从问题里识别";
 }
 
 function autosize() {
