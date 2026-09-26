@@ -7,6 +7,7 @@ from app.agent.memory import AgentMemory
 from app.agent.planner import HeuristicPlanner, build_planner
 from app.agent.runtime import ToolRuntime
 from app.config import Settings
+from app.errors import NeedsUserInput
 from app.providers.registry import ProviderBundle
 from app.schemas import ResearchBrief
 from app.trace import RunRecorder
@@ -19,6 +20,7 @@ async def run_research_agent(
     recorder: RunRecorder,
 ) -> ResearchBrief:
     memory = AgentMemory(query=request.query, run_id=recorder.run_id)
+    memory.answers = dict(getattr(request, "answers", None) or {})
     planner = build_planner(
         providers, recorder, extra_search_limit=settings.agent_extra_search_limit
     )
@@ -32,16 +34,33 @@ async def run_research_agent(
         if hasattr(nxt, "__await__"):
             nxt = await nxt
         await runtime.execute(nxt, memory)
-        if nxt.name == ActionName.ASSEMBLE_BRIEF:
+        if nxt.name in (ActionName.ASSEMBLE_BRIEF, ActionName.ASK_USER):
             break
+
+    if memory.ask:
+        raise NeedsUserInput(
+            "need_input",
+            memory.ask["question"],
+            memory.ask.get("hint") or "",
+            field=memory.ask.get("field") or "",
+            choices=memory.ask.get("choices") or [],
+        )
 
     if memory.brief is None:
         recorder.log("Agent 环未在预算内装配 Brief，改用启发式收尾")
         while not memory.done:
             nxt = fallback.next(memory)
             await runtime.execute(nxt, memory)
-            if nxt.name == ActionName.ASSEMBLE_BRIEF:
+            if nxt.name in (ActionName.ASSEMBLE_BRIEF, ActionName.ASK_USER):
                 break
+        if memory.ask:
+            raise NeedsUserInput(
+                "need_input",
+                memory.ask["question"],
+                memory.ask.get("hint") or "",
+                field=memory.ask.get("field") or "",
+                choices=memory.ask.get("choices") or [],
+            )
 
     if memory.brief is None:  # pragma: no cover
         raise RuntimeError("Agent 环结束时没有装配出 Brief")

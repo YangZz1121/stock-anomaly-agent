@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     agent_max_steps: int = 12
     # 首次检索之后，规划器最多还能追加几次检索（失败重试 + 反向证据）。
     agent_extra_search_limit: int = 2
+    # 当前对话窗口最多保留多少轮（一轮 = 一次用户发言及其后的助手回复）。
+    conversation_max_turns: int = 20
 
     def resolved_market_provider(self) -> str:
         if self.market_provider != "auto":

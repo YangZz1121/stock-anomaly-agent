@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.agent.actions import ActionName
-from app.agent.planner import HeuristicPlanner, _is_legal, _parse_action
+from app.agent.planner import HeuristicPlanner, is_legal, parse_action
 from app.agent.memory import AgentMemory
 from app.contracts import ResearchWindow
 from tests.conftest import research
@@ -59,10 +59,10 @@ def test_heuristic_retries_failed_scope_once():
 
 def test_illegal_planner_action_is_rejected():
     memory = AgentMemory("宁德时代", "t3")
-    action = _parse_action({"action": "assemble_brief", "reason": "提前结束"})
+    action = parse_action({"action": "assemble_brief", "reason": "提前结束"})
     assert action is not None
-    assert not _is_legal(action, memory, extra_limit=2)
-    assert _parse_action({"action": "not_a_tool"}) is None
+    assert not is_legal(action, memory, extra_limit=2)
+    assert parse_action({"action": "not_a_tool"}) is None
 
 
 def test_research_brief_exposes_agent_plan():

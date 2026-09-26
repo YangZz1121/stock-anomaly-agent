@@ -29,8 +29,10 @@ from app.engine.intent import (
     CHITCHAT_HINT,
     MODEL_REPLY,
     ConversationContext,
+    ConversationTurn,
     IntentKind,
     classify_intent,
+    clip_conversation,
     estimate_report_minutes,
     is_nonsense_text,
     notice_text,
@@ -54,6 +56,8 @@ class ResearchPayload(BaseModel):
     context_stocks: Optional[List[str]] = None
     context_queries: Optional[List[str]] = None
     context_window: Optional[ResearchWindow] = None
+    context_answers: Optional[Dict[str, str]] = None
+    context_turns: Optional[List[ConversationTurn]] = None
     faults: Optional[List[str]] = None
 
 
@@ -75,6 +79,7 @@ async def config() -> Dict[str, Any]:
         "windows": [
             {"value": w.value, "label": WINDOW_LABELS[w.value]} for w in ResearchWindow
         ],
+        "conversation_max_turns": settings.conversation_max_turns,
         "steps": PROGRESS_STEPS,
         "thresholds": {
             "single_day_concentration": settings.single_day_concentration_threshold,
@@ -88,7 +93,11 @@ async def config() -> Dict[str, Any]:
 @app.post("/api/research")
 async def research(payload: ResearchPayload) -> JSONResponse:
     context = _conversation_context(
-        payload.context_stocks, payload.context_queries, payload.context_window
+        payload.context_stocks,
+        payload.context_queries,
+        payload.context_window,
+        answers=payload.context_answers,
+        turns=payload.context_turns,
     )
     peek = classify_intent(payload.query, payload.window, context)
     if peek.kind == IntentKind.CHITCHAT and peek.chitchat_topic == "model":
@@ -122,6 +131,8 @@ async def research(payload: ResearchPayload) -> JSONResponse:
                 "hint": result.hint,
             }
         )
+    if result.kind == "ask" and result.ask:
+        return JSONResponse(content={"kind": "ask", **result.ask})
     if len(result.briefs) == 1:
         return JSONResponse(content=json.loads(result.briefs[0].model_dump_json()))
     return JSONResponse(
@@ -140,6 +151,7 @@ async def research_stream(
     context_stocks: Optional[str] = Query(None),
     context_queries: Optional[str] = Query(None),
     context_window: Optional[ResearchWindow] = Query(None),
+    context_answers: Optional[str] = Query(None),
     faults: Optional[str] = Query(None),
 ) -> StreamingResponse:
     fault_set = {f.strip() for f in (faults or "").split(",") if f.strip()}
@@ -147,6 +159,7 @@ async def research_stream(
         _split_context(context_stocks),
         _split_context(context_queries, sep="\n"),
         context_window,
+        answers=_parse_answers(context_answers),
     )
     return StreamingResponse(
         _stream(query, window, fault_set, context),
@@ -167,7 +180,7 @@ async def _stream(
 ):
     peek = classify_intent(query, window, context=context)
     if peek.kind == IntentKind.CHITCHAT:
-        async for chunk in _stream_chitchat(query, peek, faults):
+        async for chunk in _stream_chitchat(query, peek, faults, context):
             yield chunk
         return
     if peek.kind == IntentKind.NONSENSE and is_nonsense_text(query):
@@ -236,6 +249,13 @@ async def _stream(
             yield _sse("heartbeat", {"elapsed_ms": recorder.elapsed_ms()})
 
         result = task.result()
+        if result.kind == "ask" and result.ask:
+            yield _sse("ask", result.ask)
+        if result.kind == "chitchat" and result.reply:
+            yield _sse(
+                "reply",
+                {"kind": "chitchat", "message": result.reply, "hint": result.hint},
+            )
         for brief in result.briefs:
             yield _sse("brief", json.loads(brief.model_dump_json()))
     except (NeedsWindowChoice, ResearchError) as exc:
@@ -256,7 +276,9 @@ async def _stream(
         yield _sse("done", {})
 
 
-async def _stream_chitchat(query: str, intent, faults: set):
+async def _stream_chitchat(
+    query: str, intent, faults: set, context: Optional[ConversationContext] = None
+):
     if intent.chitchat_topic == "model":
         yield _sse(
             "reply",
@@ -273,7 +295,9 @@ async def _stream_chitchat(query: str, intent, faults: set):
     providers = build_providers(settings, faults=faults)
     recorder = RunRecorder(_run_id())
     try:
-        text = await answer_chitchat(query, intent, providers.llm, recorder)
+        text = await answer_chitchat(
+            query, intent, providers.llm, recorder, context=context
+        )
         yield _sse(
             "reply",
             {
@@ -300,12 +324,36 @@ def _conversation_context(
     stocks: Optional[List[str]],
     queries: Optional[List[str]],
     window: Optional[ResearchWindow],
+    answers: Optional[Dict[str, str]] = None,
+    turns: Optional[List[ConversationTurn]] = None,
 ) -> ConversationContext:
-    return ConversationContext(
-        stocks=[item.strip() for item in (stocks or []) if item and item.strip()],
-        queries=[item.strip() for item in (queries or []) if item and item.strip()],
-        window=window,
+    settings = get_settings()
+    return clip_conversation(
+        ConversationContext(
+            stocks=[item.strip() for item in (stocks or []) if item and item.strip()],
+            queries=[item.strip() for item in (queries or []) if item and item.strip()],
+            window=window,
+            answers={
+                str(k): str(v)
+                for k, v in (answers or {}).items()
+                if str(k).strip() and str(v).strip()
+            },
+            turns=list(turns or []),
+        ),
+        max_turns=settings.conversation_max_turns,
     )
+
+
+def _parse_answers(raw: Optional[str]) -> Dict[str, str]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if str(k).strip() and str(v).strip()}
 
 
 def _split_context(raw: Optional[str], sep: str = ",") -> List[str]:
@@ -318,8 +366,17 @@ def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _error_body(exc: ResearchError) -> Dict[str, str]:
-    return {"code": exc.code, "message": exc.message, "hint": exc.hint}
+def _error_body(exc: ResearchError) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
+        "code": exc.code,
+        "message": exc.message,
+        "hint": exc.hint,
+    }
+    field = getattr(exc, "field", None)
+    if field:
+        body["field"] = field
+        body["choices"] = list(getattr(exc, "choices", []) or [])
+    return body
 
 
 def _error_body_intent(intent) -> Dict[str, str]:

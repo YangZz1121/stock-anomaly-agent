@@ -1,15 +1,14 @@
 """规划器：根据工作记忆决定下一步。
 
 启发式规划器复现原来的三阶段顺序，保证无 LLM 时测试与主链路不变。
-有模型时，规划器可以在「行情已就绪」之后插入补检或反向检索；
-非法动作一律回退到启发式，避免模型把研究带飞。
+有模型时走原生 Function Calling；非法动作回退到启发式。
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from app.agent.actions import TOOL_SPECS, ActionName, AgentAction
+from app.agent.actions import PLANNER_TOOLS, TOOL_SPECS, ActionName, AgentAction
 from app.agent.memory import AgentMemory
 from app.agent.prompts import PLANNER_SCHEMA, PLANNER_SYSTEM
 
@@ -31,6 +30,9 @@ class HeuristicPlanner:
                 name=ActionName.FETCH_SNAPSHOT,
                 reason="先量化价格变化并确定研究优先级",
             )
+        asked = memory.ask_if_needed()
+        if asked is not None:
+            return asked
         if not memory.has("retrieved"):
             return AgentAction(
                 name=ActionName.SEARCH_EVIDENCE,
@@ -83,15 +85,25 @@ class LLMPlanner:
         forced = self._fallback.next(memory)
         if forced.name in (ActionName.RESOLVE_SUBJECT, ActionName.FETCH_SNAPSHOT):
             return forced
+        if forced.name == ActionName.ASK_USER:
+            return forced
         if memory.has("transmitted") or forced.name == ActionName.ASSEMBLE_BRIEF:
             return forced
 
-        payload = await self._llm.complete_json(
+        payload = await self._llm.complete_tools(
             purpose="plan_next",
             system=PLANNER_SYSTEM,
             user=_planner_prompt(memory),
-            schema_hint=PLANNER_SCHEMA,
+            tools=PLANNER_TOOLS,
+            tool_choice="required",
         )
+        if not payload.ok and hasattr(self._llm, "complete_json"):
+            payload = await self._llm.complete_json(
+                purpose="plan_next",
+                system=PLANNER_SYSTEM,
+                user=_planner_prompt(memory),
+                schema_hint=PLANNER_SCHEMA,
+            )
         self._recorder.record_llm(
             purpose="plan_next",
             model=getattr(self._llm, "model", "unknown"),
@@ -103,8 +115,8 @@ class LLMPlanner:
         if not payload.ok or not payload.value:
             return forced
 
-        action = _parse_action(payload.value)
-        if action is None or not _is_legal(action, memory, self.extra_search_limit):
+        action = parse_action(payload.value)
+        if action is None or not is_legal(action, memory, self.extra_search_limit):
             self._recorder.log("规划器返回了非法动作，已回退到启发式下一步")
             return forced
         if not action.reason:
@@ -118,8 +130,8 @@ def build_planner(providers: Any, recorder: Any, extra_search_limit: int) -> Any
     return LLMPlanner(providers.llm, recorder, extra_search_limit=extra_search_limit)
 
 
-def _parse_action(raw: dict) -> Optional[AgentAction]:
-    name = str(raw.get("action") or "").strip()
+def parse_action(raw: dict) -> Optional[AgentAction]:
+    name = str(raw.get("action") or raw.get("name") or "").strip()
     try:
         action_name = ActionName(name)
     except ValueError:
@@ -130,15 +142,19 @@ def _parse_action(raw: dict) -> Optional[AgentAction]:
         if not scopes:
             scopes = None
     extra = [str(t).strip() for t in (raw.get("extra_terms") or []) if str(t).strip()]
+    choices = [str(c).strip() for c in (raw.get("choices") or []) if str(c).strip()]
     return AgentAction(
         name=action_name,
         reason=str(raw.get("reason") or ""),
         scopes=scopes,
         extra_terms=extra[:8],
+        field=str(raw.get("field") or ""),
+        question=str(raw.get("question") or ""),
+        choices=choices[:6],
     )
 
 
-def _is_legal(action: AgentAction, memory: AgentMemory, extra_limit: int) -> bool:
+def is_legal(action: AgentAction, memory: AgentMemory, extra_limit: int) -> bool:
     if action.name == ActionName.RESOLVE_SUBJECT:
         return not memory.has("subject")
     if action.name == ActionName.FETCH_SNAPSHOT:
@@ -157,6 +173,11 @@ def _is_legal(action: AgentAction, memory: AgentMemory, extra_limit: int) -> boo
         return memory.has("assessed") and not memory.has("counter")
     if action.name == ActionName.BUILD_TRANSMISSIONS:
         return memory.has("assessed") and not memory.has("transmitted")
+    if action.name == ActionName.ASK_USER:
+        if not memory.has("snapshot") or memory.has("transmitted"):
+            return False
+        field = action.field or "continue"
+        return field not in memory.answers and not memory.has(f"asked:{field}")
     if action.name == ActionName.ASSEMBLE_BRIEF:
         return memory.has("transmitted")
     return False
@@ -168,7 +189,6 @@ def _planner_prompt(memory: AgentMemory) -> str:
     return (
         "当前研究工作记忆：\n"
         f"{json.dumps(memory.planner_view(), ensure_ascii=False, indent=2)}\n\n"
-        "可选动作：\n"
+        "用 Function Calling 选择下一步工具：\n"
         + "\n".join(f"- {spec['name']}：{spec['description']}" for spec in TOOL_SPECS)
-        + "\n\n请只返回下一步动作。"
     )

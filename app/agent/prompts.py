@@ -94,28 +94,34 @@ structural（结构性）、uncertain。
 PLANNER_SYSTEM = (
     BASE_SYSTEM
     + """
-本轮任务：根据当前研究工作记忆，选择**下一步**要执行的动作。
+本轮任务：根据当前研究工作记忆，用 Function Calling 选择**下一步**要执行的工具。
 
 你是规划器，不是研究员。不要在这一步生成驱动因素或结论。
-只能从给定动作清单里选一个，并说明理由。
+必须调用恰好一个工具，不要只回文字。
 
 硬约束：
 - 标的和行情还没就绪时，必须先走 resolve_subject / fetch_snapshot。
 - 证据不足或某个范围检索失败时，优先 search_evidence 做一次补检。
 - 已经提出候选之后，必须主动 search_counter_evidence，不能跳过反向证据。
+- 行业是弱证据、检索词不够、或关键未知只有用户能补时，调用 ask_user，不要猜。
+- 同一个 field 用户已经回答过，就不要再问。
 - 传导分析完成后再 assemble_brief。不要提前结束。
-- extra_terms 只能用给定证据或缺口里出现过的词，不要编造公司或政策名称。
+- extra_terms 只能用给定证据、用户原话或缺口里出现过的词，不要编造公司或政策名称。
 """
 )
 
 PLANNER_SCHEMA = {
-    "action": (
+    "name": (
         "resolve_subject | fetch_snapshot | search_evidence | propose_drivers | "
-        "assess_mechanisms | search_counter_evidence | build_transmissions | assemble_brief"
+        "assess_mechanisms | search_counter_evidence | build_transmissions | "
+        "ask_user | assemble_brief"
     ),
     "reason": "为什么现在做这一步",
     "scopes": ["market", "industry", "company"],
     "extra_terms": ["补充检索词，可空"],
+    "field": "industry | keywords | window | continue",
+    "question": "向用户提的问题，仅 ask_user 需要",
+    "choices": ["可选快捷回答"],
 }
 
 DRIVER_SCHEMA = {

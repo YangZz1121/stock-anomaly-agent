@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -166,6 +166,78 @@ class OpenAICompatibleLLM:
             )
         return Fetched.failure(source, self.name, last_note, FetchStatus.FAILED)
 
+    async def complete_tools(
+        self,
+        purpose: str,
+        system: str,
+        user: str,
+        tools: List[Dict[str, Any]],
+        tool_choice: str = "required",
+    ) -> Fetched[Dict[str, Any]]:
+        source = f"llm:{self.model}:{purpose}"
+        if not self._has_key:
+            return Fetched.failure(source, self.name, "未配置 LLM_API_KEY")
+
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+            "tools": tools,
+            "tool_choice": tool_choice,
+        }
+
+        last_note = "未知错误"
+        allow_json_fallback = True
+        for attempt in range(self._max_retries + 1):
+            started = time.perf_counter()
+            try:
+                resp = await self._client.post("/chat/completions", json=payload)
+            except httpx.TimeoutException:
+                last_note = "LLM 请求超时"
+                continue
+            except httpx.HTTPError as exc:
+                last_note = f"LLM 网络错误：{exc}"
+                continue
+
+            if resp.status_code == 429:
+                last_note = "LLM 触发频率限制"
+                continue
+            if resp.status_code >= 400:
+                if allow_json_fallback and "tools" in payload:
+                    payload.pop("tools", None)
+                    payload.pop("tool_choice", None)
+                    payload["response_format"] = {"type": "json_object"}
+                    allow_json_fallback = False
+                    last_note = "目标模型不支持 tools，已回退到 JSON 规划"
+                    continue
+                last_note = f"LLM HTTP {resp.status_code}：{resp.text[:200]}"
+                continue
+
+            try:
+                body = resp.json()
+                message = body["choices"][0]["message"]
+            except (ValueError, KeyError, IndexError) as exc:
+                last_note = f"LLM 响应结构异常：{exc}"
+                continue
+
+            parsed = _parse_tool_message(message)
+            if parsed is None:
+                last_note = "LLM 未返回可解析的 function call"
+                continue
+
+            latency = int((time.perf_counter() - started) * 1000)
+            return Fetched.success(
+                parsed,
+                source,
+                self.name,
+                note=f"attempt={attempt + 1}, latency_ms={latency}, fc=1",
+            )
+
+        return Fetched.failure(source, self.name, last_note, FetchStatus.FAILED)
+
 
 class DisabledLLM:
     """没有密钥时的占位实现，任何调用都显式失败。"""
@@ -200,6 +272,39 @@ class DisabledLLM:
             self.name,
             "未配置 LLM，闲聊改用固定介绍文案",
         )
+
+    async def complete_tools(
+        self,
+        purpose: str,
+        system: str,
+        user: str,
+        tools: List[Any],
+        tool_choice: str = "required",
+    ) -> Fetched[Dict[str, Any]]:
+        return Fetched.failure(
+            f"llm:disabled:{purpose}",
+            self.name,
+            "未配置 LLM，规划器改用启发式",
+        )
+
+
+def _parse_tool_message(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    calls = message.get("tool_calls") or []
+    if calls:
+        fn = (calls[0] or {}).get("function") or {}
+        name = fn.get("name")
+        raw_args = fn.get("arguments") or "{}"
+        if isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            args = _parse_json(str(raw_args)) or {}
+        if not name:
+            return None
+        out = dict(args)
+        out["name"] = name
+        out.setdefault("action", name)
+        return out
+    return _parse_json(message.get("content") or "")
 
 
 def _parse_json(content: str) -> Optional[Dict[str, Any]]:

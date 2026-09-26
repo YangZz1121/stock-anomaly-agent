@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import List, Optional
+
 
 class ResearchError(Exception):
     def __init__(self, code: str, message: str, hint: str = "") -> None:
@@ -17,3 +19,20 @@ class ResearchError(Exception):
 
 class NeedsWindowChoice(ResearchError):
     """只给了股票名、没给研究窗口时，由前端提示用户选择。"""
+
+
+class NeedsUserInput(ResearchError):
+    """研究中途需要用户补一句，才能继续。"""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        hint: str = "",
+        *,
+        field: str = "",
+        choices: Optional[List[str]] = None,
+    ) -> None:
+        super().__init__(code, message, hint)
+        self.field = field
+        self.choices = list(choices or [])

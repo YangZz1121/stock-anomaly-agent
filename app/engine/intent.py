@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -76,12 +76,53 @@ class IntentKind(str, Enum):
     REPORT = "report"
 
 
+class ConversationTurn(BaseModel):
+    """当前对话窗口里的一轮发言。"""
+
+    role: str
+    text: str = ""
+    kind: str = ""
+    stocks: List[str] = Field(default_factory=list)
+    window: Optional[ResearchWindow] = None
+
+
 class ConversationContext(BaseModel):
-    """最近一轮对话里已经出现过的标的与窗口，供缺参时回填。"""
+    """当前对话窗口的上下文。查询列表按轮次截断，默认最多 20 轮。"""
 
     stocks: List[str] = Field(default_factory=list)
     queries: List[str] = Field(default_factory=list)
     window: Optional[ResearchWindow] = None
+    turns: List[ConversationTurn] = Field(default_factory=list)
+    answers: Dict[str, str] = Field(default_factory=dict)
+
+
+def clip_conversation(
+    context: Optional[ConversationContext],
+    max_turns: int = 20,
+) -> ConversationContext:
+    """只保留最近 max_turns 轮用户发言及其后的助手回复。"""
+    if context is None:
+        return ConversationContext()
+    queries = list(context.queries or [])[-max_turns:]
+    turns = list(context.turns or [])
+    user_idx = [i for i, item in enumerate(turns) if item.role == "user"]
+    if len(user_idx) > max_turns:
+        turns = turns[user_idx[-max_turns] :]
+    stocks = list(context.stocks or [])
+    if not stocks:
+        for turn in reversed(turns):
+            if turn.stocks:
+                stocks = list(turn.stocks)
+                break
+    window = context.window
+    if window is None:
+        for turn in reversed(turns):
+            if turn.window:
+                window = turn.window
+                break
+    return context.model_copy(
+        update={"queries": queries, "turns": turns, "stocks": stocks, "window": window}
+    )
 
 
 class ChatIntent(BaseModel):

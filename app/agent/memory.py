@@ -56,8 +56,32 @@ class AgentMemory:
         self.drafts: Dict[str, Any] = {}
 
         self.brief: Optional[ResearchBrief] = None
+        self.ask: Optional[Dict[str, Any]] = None
+        self.answers: Dict[str, str] = {}
         self.done = False
         self._flags: Set[str] = set()
+
+    def answered(self, field: str) -> bool:
+        return bool((self.answers.get(field) or "").strip())
+
+    def ask_if_needed(self) -> Optional[AgentAction]:
+        """启发式只在弱行业且用户还没表态时提问，避免打断主链路测试。"""
+        if not self.has("snapshot") or self.has("retrieved"):
+            return None
+        subject = self.subject
+        industry = getattr(subject, "industry", None) if subject else None
+        if industry is None or not getattr(industry, "is_weak_evidence", False):
+            return None
+        if self.answered("industry") or self.has("asked:industry"):
+            return None
+        guessed = getattr(industry, "index_name", None) or "该行业"
+        return AgentAction(
+            name=ActionName.ASK_USER,
+            reason="行业由弱证据推断，需要用户确认后才继续定向取数",
+            field="industry",
+            question=f"目前只能弱证据判断所属行业是「{guessed}」。是否按这个行业继续研究？",
+            choices=[guessed, "按弱证据继续"],
+        )
 
     def has(self, flag: str) -> bool:
         return flag in self._flags
@@ -98,4 +122,9 @@ class AgentMemory:
             "counter_done": self.has("counter"),
             "transmitted": self.has("transmitted"),
             "gap_fields": [g.field for g in self.gaps],
+            "answers": dict(self.answers),
+            "industry_weak": bool(
+                self.subject
+                and getattr(self.subject.industry, "is_weak_evidence", False)
+            ),
         }

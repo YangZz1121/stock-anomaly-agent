@@ -84,6 +84,8 @@ class ToolRuntime:
             await self._counter(memory)
         elif name == ActionName.BUILD_TRANSMISSIONS:
             await self._transmit(memory)
+        elif name == ActionName.ASK_USER:
+            self._ask(memory, action)
         elif name == ActionName.ASSEMBLE_BRIEF:
             self._assemble(memory)
         else:  # pragma: no cover
@@ -202,6 +204,12 @@ class ToolRuntime:
                 snapshot.clue_reasons,
                 getattr(self.providers.market, "name", "unknown"),
             )
+            keywords = (memory.answers.get("keywords") or "").strip()
+            if keywords:
+                memory.clue_pool.append(keywords)
+            industry_answer = (memory.answers.get("industry") or "").strip()
+            if industry_answer and industry_answer not in ("按弱证据继续", "continue"):
+                memory.clue_pool.append(industry_answer)
             memory.evidence_window = build_evidence_window(
                 subject.resolution.window_days,
                 subject.trading_days,
@@ -211,12 +219,15 @@ class ToolRuntime:
         scopes = action.scopes or memory.scopes
         if not memory.has("retrieved"):
             self.recorder.step("retrieve", "running")
+            clues = list(memory.clue_pool)
+            if action.extra_terms:
+                clues.extend(action.extra_terms)
             memory.collection = await collector.collect(
                 window=memory.evidence_window,
                 scopes=scopes,
                 stock_name=subject.stock.name,
                 industry_name=subject.industry.index_name,
-                clue_keywords=memory.clue_pool,
+                clue_keywords=clues,
             )
             memory.gaps.extend(memory.collection.gaps)
             memory.failed_scopes = {
@@ -339,6 +350,22 @@ class ToolRuntime:
             f"{sum(len(d.contradicting_refs) for d in memory.drivers)} 条反向证据",
         )
         memory.mark("counter")
+
+    def _ask(self, memory: AgentMemory, action: AgentAction) -> None:
+        field = action.field or "continue"
+        if memory.answered(field):
+            memory.mark(f"asked:{field}")
+            return
+        memory.ask = {
+            "field": field,
+            "question": action.question or "还需要您补充一点信息才能继续研究。",
+            "hint": action.reason or "回复选项，或直接输入补充信息。",
+            "choices": list(action.choices),
+        }
+        memory.mark(f"asked:{field}")
+        memory.done = True
+        self.recorder.step("retrieve", "running", action.question or action.reason)
+        self.recorder.log(f"人机协作：等待用户补充 {field}")
 
     async def _transmit(self, memory: AgentMemory) -> None:
         assert memory.collection is not None and memory.ctx is not None

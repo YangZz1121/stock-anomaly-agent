@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,7 +19,7 @@ from app.engine.intent import (
     classify_intent,
     is_nonsense_text,
 )
-from app.errors import NeedsWindowChoice, ResearchError
+from app.errors import NeedsUserInput, NeedsWindowChoice, ResearchError
 from app.orchestrator import ResearchRequest, run_research, run_snapshot
 from app.providers.registry import ProviderBundle
 from app.schemas import ResearchBrief
@@ -39,6 +39,7 @@ class ChatResult(BaseModel):
     tasks: List[Dict[str, str]] = Field(default_factory=list)
     reply: Optional[str] = None
     hint: str = ""
+    ask: Optional[Dict[str, Any]] = None
 
 
 async def gate_intent(
@@ -73,10 +74,12 @@ async def answer_chitchat(
     intent: ChatIntent,
     llm,
     recorder: RunRecorder,
+    context: Optional[ConversationContext] = None,
 ) -> str:
     if intent.chitchat_topic == "model":
         return MODEL_REPLY
-    result = await llm.complete_text("chitchat", CHITCHAT_SYSTEM, query)
+    user = _chitchat_user(query, context)
+    result = await llm.complete_text("chitchat", CHITCHAT_SYSTEM, user)
     recorder.record_llm(
         purpose="chitchat",
         model=getattr(llm, "model", "unknown"),
@@ -106,7 +109,9 @@ async def run_chat(
             query, window, context=context, llm=providers.llm, recorder=recorder
         )
     if intent.kind == IntentKind.CHITCHAT:
-        text = await answer_chitchat(query, intent, providers.llm, recorder)
+        text = await answer_chitchat(
+            query, intent, providers.llm, recorder, context=context
+        )
         return ChatResult(
             kind=intent.kind.value,
             reply=text,
@@ -116,6 +121,7 @@ async def run_chat(
     briefs: List[ResearchBrief] = []
     tasks: List[Dict[str, str]] = []
     seen = set()
+    answers = dict(context.answers) if context else {}
     for index, key in enumerate(keys):
         recorder.emit(
             "task",
@@ -130,11 +136,24 @@ async def run_chat(
             query=query,
             window=window or intent.parsed.window,
             search_key=key,
+            answers=answers,
         )
-        if intent.kind == IntentKind.SNAPSHOT:
-            brief = await run_snapshot(request, providers, settings, recorder)
-        else:
-            brief = await run_research(request, providers, settings, recorder)
+        try:
+            if intent.kind == IntentKind.SNAPSHOT:
+                brief = await run_snapshot(request, providers, settings, recorder)
+            else:
+                brief = await run_research(request, providers, settings, recorder)
+        except NeedsUserInput as exc:
+            return ChatResult(
+                kind="ask",
+                hint=exc.hint,
+                ask={
+                    "field": exc.field,
+                    "question": exc.message,
+                    "hint": exc.hint,
+                    "choices": exc.choices,
+                },
+            )
         code = brief.subject.stock.thscode
         if code in seen:
             continue
@@ -147,3 +166,21 @@ async def run_chat(
         briefs=briefs,
         tasks=tasks,
     )
+
+
+def _chitchat_user(query: str, context: Optional[ConversationContext]) -> str:
+    if context is None:
+        return query
+    lines: List[str] = []
+    for turn in context.turns[-40:]:
+        label = "用户" if turn.role == "user" else "助手"
+        text = (turn.text or "").strip()
+        if text:
+            lines.append(f"{label}：{text}")
+    if not lines:
+        for item in context.queries[-20:]:
+            if item.strip():
+                lines.append(f"用户：{item.strip()}")
+    if not lines:
+        return query
+    return "最近对话：\n" + "\n".join(lines) + f"\n用户：{query}"

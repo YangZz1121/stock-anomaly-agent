@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Dict, Optional
 
 from pydantic import BaseModel
 
@@ -45,6 +45,7 @@ class ResearchRequest(BaseModel):
     query: str
     window: Optional[ResearchWindow] = None
     search_key: Optional[str] = None
+    answers: Dict[str, str] = {}
 
 
 async def run_research(

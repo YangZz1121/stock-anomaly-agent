@@ -16,6 +16,9 @@ const state = {
   messages: [],
   nextId: 1,
   windows: [],
+  maxTurns: 20,
+  pendingAsk: null,
+  pendingAnswers: {},
 };
 
 const EXAMPLES = [
@@ -40,6 +43,7 @@ async function init() {
   try {
     const cfg = await (await fetch("/api/config")).json();
     state.windows = cfg.windows || [];
+    state.maxTurns = cfg.conversation_max_turns || 20;
     renderProviders(cfg);
     renderWindowChips(cfg.windows);
   } catch (e) {
@@ -116,6 +120,8 @@ function resetThread() {
   state.messages = [];
   state.brief = null;
   state.evidenceById = {};
+  state.pendingAsk = null;
+  state.pendingAnswers = {};
   $("evidenceBtn").disabled = true;
   $("traceBtn").disabled = true;
   state.brief = null;
@@ -135,12 +141,20 @@ function appendSystemError(message, hint) {
 }
 
 function run(presetQuery) {
-  const query = (presetQuery ?? $("queryInput").value).trim();
-  if (!query) return;
+  const typed = (presetQuery ?? $("queryInput").value).trim();
+  if (!typed) return;
 
   if (state.source) state.source.close();
 
-  state.messages.push({ id: state.nextId++, role: "user", text: query });
+  let researchQuery = typed;
+  if (state.pendingAsk) {
+    state.pendingAnswers[state.pendingAsk.field] = typed;
+    researchQuery = state.pendingAsk.query || typed;
+    if (state.pendingAsk.field === "window") setWindow(typed);
+    state.pendingAsk = null;
+  }
+
+  state.messages.push({ id: state.nextId++, role: "user", text: typed });
   const aid = state.nextId++;
   state.messages.push({
     id: aid,
@@ -159,12 +173,15 @@ function run(presetQuery) {
   paintThread();
 
   $("runBtn").disabled = true;
-  const params = new URLSearchParams({ query });
+  const params = new URLSearchParams({ query: researchQuery });
   if (state.window) params.set("window", state.window);
   const ctx = conversationContext();
   if (ctx.stocks.length) params.set("context_stocks", ctx.stocks.join(","));
   if (ctx.queries.length) params.set("context_queries", ctx.queries.join("\n"));
   if (ctx.window) params.set("context_window", ctx.window);
+  if (Object.keys(state.pendingAnswers).length) {
+    params.set("context_answers", JSON.stringify(state.pendingAnswers));
+  }
 
   const started = performance.now();
   state.timer = setInterval(() => {
@@ -215,6 +232,19 @@ function run(presetQuery) {
     adoptBriefs(msg.briefs);
     paintAssistant(aid);
   });
+  source.addEventListener("ask", (e) => {
+    const data = JSON.parse(e.data);
+    const msg = state.messages.find((m) => m.id === aid);
+    if (!msg) return;
+    msg.phase = "ask";
+    msg.ask = data;
+    state.pendingAsk = {
+      field: data.field,
+      query: researchQuery,
+      window: state.window,
+    };
+    paintAssistant(aid);
+  });
   source.addEventListener("reply", (e) => {
     const data = JSON.parse(e.data);
     const msg = state.messages.find((m) => m.id === aid);
@@ -240,6 +270,7 @@ function conversationContext() {
   const priors = [];
   let latestStocks = [];
   let latestWindow = "";
+  const maxTurns = state.maxTurns || 20;
   for (const m of state.messages) {
     if (m.role === "user" && m.text) priors.push(m.text);
     if (m.role !== "assistant") continue;
@@ -252,8 +283,9 @@ function conversationContext() {
   }
   return {
     stocks: [...new Set(latestStocks)],
-    queries: priors.slice(0, -1).slice(-6),
+    queries: priors.slice(0, -1).slice(-maxTurns),
     window: latestWindow,
+    answers: { ...state.pendingAnswers },
   };
 }
 
@@ -330,6 +362,7 @@ function revealMessage(id) {
 
 function renderReply(m) {
   if (m.phase === "thinking") return renderThinking(m);
+  if (m.phase === "ask") return renderAsk(m.ask);
   if (m.phase === "reply") {
     return `<div class="plain-card">
       <p>${esc(m.reply || "")}</p>
@@ -363,6 +396,21 @@ function renderThinking(m) {
       <span data-elapsed="${m.id}">${esc(m.elapsed || "0.0s")}</span></div>
     ${task}
     <ul class="steps">${steps}</ul>
+  </div>`;
+}
+
+function renderAsk(ask) {
+  const items = (ask && ask.choices) || [];
+  const buttons = items.map((item) => {
+    const value = typeof item === "string" ? item : (item.value || "");
+    const label = typeof item === "string" ? item : (item.label || value);
+    return `<button type="button" data-ask="${esc(value)}" data-field="${esc(ask.field || "")}">${esc(label)}</button>`;
+  }).join("");
+  return `<div class="plain-card">
+    <p>${esc((ask && ask.question) || "还需要您补充一点信息。")}</p>
+    ${ask && ask.hint ? `<p class="hint">${esc(ask.hint)}</p>` : ""}
+    ${buttons ? `<div class="follow" style="margin-top:12px">${buttons}</div>` : ""}
+    <p class="hint">也可以直接在输入框里补充。</p>
   </div>`;
 }
 
@@ -715,6 +763,14 @@ function bindReply(root) {
       setWindow(el.dataset.win);
       const lastUser = [...state.messages].reverse().find((m) => m.role === "user");
       if (lastUser) run(lastUser.text);
+    });
+  });
+  root.querySelectorAll("[data-ask]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const field = el.dataset.field || (state.pendingAsk && state.pendingAsk.field);
+      if (field) state.pendingAnswers[field] = el.dataset.ask;
+      if (field === "window") setWindow(el.dataset.ask);
+      run(el.dataset.ask);
     });
   });
   state.messages.filter((m) => m.phase === "brief").forEach((m) => {

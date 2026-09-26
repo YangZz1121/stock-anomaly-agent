@@ -161,4 +161,14 @@ class LLMProvider(Protocol):
     ) -> Fetched[str]:
         """闲聊等自由文本回复。"""
 
+    async def complete_tools(
+        self,
+        purpose: str,
+        system: str,
+        user: str,
+        tools: list,
+        tool_choice: str = "required",
+    ) -> Fetched[Dict[str, Any]]:
+        """原生 Function Calling：模型必须选一个 tool。"""
+
     async def aclose(self) -> None: ...
