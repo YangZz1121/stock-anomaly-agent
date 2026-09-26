@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import get_settings
 from app.contracts import FetchStatus
 from app.providers.registry import build_providers
+from app.timeutil import shift_days, today_str
 
 OK = "\033[32m通\033[0m"
 BAD = "\033[31m不通\033[0m"
@@ -42,6 +43,10 @@ def _report(label: str, fetched) -> bool:
 
 async def main() -> int:
     settings = get_settings()
+
+    # 日期用相对今天算，别写死——写死的日期过几周就会让自检报假故障
+    end = today_str()
+    start = shift_days(end, -20)
 
     print("配置状态（不显示密钥内容）")
     print(f"  FUYAO_API_KEY : {_mask(settings.fuyao_api_key)}")
@@ -68,12 +73,13 @@ async def main() -> int:
             code = tickers.value[0].thscode
         healthy &= _report(
             f"日 K（{code}）",
-            await providers.market.daily_bars(code, "2026-09-01", "2026-09-25"),
+            await providers.market.daily_bars(code, start, end),
         )
         healthy &= _report(
-            "市场指数", await providers.market.index_daily_bars(
-                settings.market_index_code, "2026-09-01", "2026-09-25"
-            )
+            "市场指数",
+            await providers.market.index_daily_bars(
+                settings.market_index_code, start, end
+            ),
         )
         healthy &= _report("行业指数列表", await providers.market.industry_indexes())
         # 异动原因只是检索线索，拿不到不影响主链路
@@ -84,8 +90,8 @@ async def main() -> int:
             "事件检索",
             await providers.evidence.search_events(
                 "动力电池 出口 政策",
-                "2026-09-18",
-                "2026-09-25",
+                shift_days(end, -7),
+                end,
                 scope="company",
                 context={"stock_name": "宁德时代", "required_terms": ["宁德时代"]},
             ),
