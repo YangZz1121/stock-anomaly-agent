@@ -444,6 +444,17 @@ function sectionHead(num, title, desc) {
   </header>`;
 }
 
+function moduleBlock(insight, body, extras) {
+  const extraItems = uniqueTexts((extras || []).filter((x) => !isVague(x)));
+  return `<div class="mod">
+    ${insight ? `<p class="mod-insight">${esc(insight)}</p>` : ""}
+    ${body ? `<p class="mod-body">${esc(body)}</p>` : ""}
+    ${extraItems.length ? `<ul class="mod-extra">${
+      extraItems.map((item) => `<li>${item}</li>`).join("")
+    }</ul>` : ""}
+  </div>`;
+}
+
 function renderBriefHtml(brief, mid, split) {
   const s = brief.subject;
   const w = brief.what_happened;
@@ -457,77 +468,14 @@ function renderBriefHtml(brief, mid, split) {
   const kicker = split
     ? `<div class="company-kicker">${esc(s.stock.name)} · ${esc(s.stock.thscode)}</div>`
     : "";
-
-  const takeaways = [
-    ["价格形态", w.pattern_label],
-  ];
-  if (!snapshot) {
-    takeaways.push(["调查路径", brief.why_happened.priority_label]);
-    takeaways.push(["基本面含义", brief.what_it_means.overall.display]);
-  }
-  const takeawayHtml = `<div class="takeaways" aria-label="报告要点">${
-    takeaways.map(([k, v]) =>
-      `<div class="takeaway"><span>${esc(k)}</span><b>${esc(v)}</b></div>`
-    ).join("")
-  }</div>`;
+  const priceDrivers = materialPriceDrivers(brief);
+  const companyDrivers = materialCompanyDrivers(brief);
 
   const rest = snapshot
     ? `<p class="disclaimer">以上为行情事实快照。如需完整异动分析——含驱动因素验证与基本面含义——请直接说明。</p>`
-    : `
-    <section class="block">
-      ${sectionHead("02", "相对表现", "对照市场与行业，只用于确定调查路径，不做贡献拆分。")}
-      ${compareHtml(w.comparison)}
-      <p class="disclaimer">${esc(w.comparison.disclaimer)}</p>
-      ${gapsHtml(w.gaps, "行情数据缺口")}
-    </section>
+    : renderReportSections(brief, w, priceDrivers, companyDrivers);
 
-    <section class="block">
-      ${sectionHead("03", "驱动因素", "候选原因须通过时间、横截面、特异性、机制四项验证后，才进入结论。")}
-      <div class="priority">
-        <span class="priority-kicker">调查路径</span>
-        <b>${esc(brief.why_happened.priority_label)}</b>
-        <p>${esc(brief.why_happened.priority_reason)}</p>
-      </div>
-      ${brief.why_happened.evidence_window_note
-        ? `<p class="hint">${esc(brief.why_happened.evidence_window_note)}</p>` : ""}
-      ${brief.why_happened.drivers.length
-        ? brief.why_happened.drivers.map(renderDriver).join("")
-        : `<p class="empty-note">本次未形成通过验证门槛的候选驱动因素。</p>`}
-      ${brief.why_happened.clue_pool.length
-        ? `<div class="clue-box"><span class="subhead">检索线索</span>
-            <p>仅作检索方向，不作为结论依据：${brief.why_happened.clue_pool.map(esc).join("、")}</p></div>`
-        : ""}
-      ${gapsHtml(brief.why_happened.gaps, "证据检索缺口")}
-    </section>
-
-    <section class="block">
-      ${sectionHead("04", "基本面含义", "判断对象是公司经营，不是未来股价；各因素独立评估，不做百分比归因。")}
-      <div class="overall">
-        <span class="priority-kicker">总体判断</span>
-        <b>${esc(brief.what_it_means.overall.display)}</b>
-        <p>${esc(brief.what_it_means.overall.reason)}</p>
-      </div>
-      ${renderAssessments(brief)}
-      <p class="disclaimer">${esc(brief.what_it_means.note)}</p>
-    </section>
-
-    <section class="block">
-      ${sectionHead("05", "待观察事项", "证据不足时列出未知，作为研究结果输出，不强行补全结论。")}
-      <p class="hint">${esc(brief.open_questions.note)}</p>
-      ${renderOpenQuestions(brief.open_questions.questions)}
-      ${gapsHtml(brief.open_questions.gaps, "数据缺口")}
-    </section>
-
-    ${qualityStrip(brief)}
-    ${(brief.disclaimers || []).length
-      ? `<div class="legal-box"><span class="subhead">声明</span><ul>${
-          brief.disclaimers.map((d) => `<li>${esc(d)}</li>`).join("")
-        }</ul></div>` : ""}
-    <div class="follow">
-      <button type="button" data-act="evidence">查看证据链</button>
-      <button type="button" data-act="trace">查看研究过程</button>
-    </div>`;
-
+  const { insight, body } = splitSummary(w.summary, brief);
   return `<article class="brief ${snapshot ? "snapshot" : ""}">
     ${kicker}
     <section class="hero">
@@ -542,213 +490,364 @@ function renderBriefHtml(brief, mid, split) {
           <span>${esc(dates)}</span>
         </div>
       </div>
-      <p class="hero-lead">${esc(w.summary)}</p>
-      ${notes.length ? `<p class="remap">${esc(notes.join(" "))}</p>` : ""}
-      ${takeawayHtml}
+      ${moduleBlock(insight, body, notes)}
     </section>
 
     <section class="block">
-      ${sectionHead("01", "行情事实", "量化价格变化，并给出可复核的形态判断。")}
-      <div class="chart-wrap"><svg class="chart" id="chart-${mid}" viewBox="0 0 720 228" preserveAspectRatio="none"></svg></div>
-      <div class="chart-legend" id="legend-${mid}"></div>
-      <div class="measure-grid">${w.measures.map(measureCard).join("")}</div>
-      <div class="pattern">
-        <span class="priority-kicker">形态判断</span>
-        <b>${esc(w.pattern_label)}</b>
-        <p>${esc(w.pattern_reason)}</p>
-      </div>
-      ${snapshot ? "" : `<div class="fact-meta">
-        <span>所属行业</span>
-        <b>${esc(w.industry.index_name || "未识别")}</b>
-        <span>${esc(w.industry.method_label)}${w.industry.is_weak_evidence ? " · 弱证据" : ""}</span>
-      </div>`}
+      ${sectionHead("01", "行情事实")}
+      ${renderPriceModule(w, mid, snapshot)}
     </section>
     ${rest}
   </article>`;
 }
 
-function qualityStrip(brief) {
-  const met = brief.metrics || {};
-  const items = [
-    ["证据覆盖", pctStr(met.evidence_coverage || 0)],
-    ["证据条目", String(met.evidence_count || 0)],
-    ["独立信源", String(met.independent_source_count || 0)],
-    ["研究耗时", ((met.time_to_verifiable_insight_ms || 0) / 1000).toFixed(1) + "s"],
-    ["无证据推断", pctStr(met.unsupported_inference_rate || 0)],
-  ];
-  return `<section class="block quality">
-    ${sectionHead("附", "研究质量", "过程指标，用于核验本次研究是否可追溯；不构成对价格或基本面的判断。")}
-    <div class="metrics">${
-      items.map(([k, v]) => `<div class="metric"><span>${k}</span><b>${esc(v)}</b></div>`).join("")
-    }</div>
-  </section>`;
+function renderReportSections(brief, w, priceDrivers, companyDrivers) {
+  const questions = watchableQuestions(brief, companyDrivers);
+  const legal = (brief.disclaimers || []).filter((d) =>
+    /不构成投资建议|不对未来股价/.test(d)
+  ).slice(0, 2);
+  return `
+    <section class="block">
+      ${sectionHead("02", "相对表现")}
+      ${renderRelativeModule(w, brief.why_happened)}
+    </section>
+    <section class="block">
+      ${sectionHead("03", "驱动因素")}
+      ${renderDriversModule(brief, priceDrivers)}
+    </section>
+    <section class="block">
+      ${sectionHead("04", "基本面含义")}
+      ${renderMeansModule(brief, companyDrivers)}
+    </section>
+    <section class="block">
+      ${sectionHead("05", "待观察事项")}
+      ${renderWatchModule(questions, brief.open_questions.gaps)}
+    </section>
+    <div class="follow">
+      <button type="button" data-act="evidence">查看证据链</button>
+      <button type="button" data-act="trace">查看研究过程</button>
+    </div>
+    ${legal.length ? `<p class="disclaimer">${esc(legal.join(" "))}</p>` : ""}`;
 }
 
-function measureCard(m) {
-  const na = m.value === null || m.value === undefined;
-  const cls = na ? "na" : signClass(m);
-  return `<div class="measure">
-    <div class="m-label">${esc(m.label)}</div>
-    <div class="m-value ${cls}">${esc(m.display)}</div>
-    <div class="m-caliber">${esc(m.caliber || "")}</div>
-    ${m.note ? `<div class="m-note">${esc(m.note)}</div>` : ""}
-  </div>`;
+function splitSummary(summary, brief) {
+  const parts = String(summary || "").split("。").map((s) => s.trim()).filter(Boolean);
+  const insight = parts[0] ? `${parts[0]}。` : "";
+  const rest = parts.slice(1).join("。");
+  const bodyBits = [];
+  if (rest) bodyBits.push(rest.endsWith("。") ? rest : `${rest}。`);
+  const overall = brief && brief.what_it_means && brief.what_it_means.overall;
+  if (brief && brief.kind !== "snapshot" && overall && overall.can_summarize
+      && overall.display && !/暂无法|快照/.test(overall.display)) {
+    bodyBits.push(`基本面含义：${overall.display}。`);
+  }
+  return { insight, body: uniqueSentence(bodyBits.join("")) };
+}
+
+function renderPriceModule(w, mid, snapshot) {
+  const usable = (w.measures || []).filter((m) => m.value !== null && m.value !== undefined);
+  const lead = usable[0];
+  const insight = lead
+    ? `${w.pattern_label}，${lead.label} ${lead.display}。`
+    : `${w.pattern_label}。`;
+  const body = cleanText(w.pattern_reason);
+  const extras = [];
+  usable.slice(1).forEach((m) => {
+    if (body.includes(m.label) || insight.includes(m.display)) return;
+    if (m.note && !isVague(m.note) && !sameMeaning(m.note, body)) {
+      extras.push(`${esc(m.label)} ${measureValue(m)}　${esc(m.note)}`);
+    } else {
+      extras.push(`${esc(m.label)} ${measureValue(m)}`);
+    }
+  });
+  if (!snapshot && w.industry && w.industry.index_name) {
+    extras.push(`所属行业 ${esc(w.industry.index_name)}`);
+  }
+  return `${moduleBlock(insight, body, extras)}
+    <div class="chart-wrap"><svg class="chart" id="chart-${mid}" viewBox="0 0 720 228" preserveAspectRatio="none"></svg></div>
+    <div class="chart-legend" id="legend-${mid}"></div>`;
+}
+
+function renderRelativeModule(w, why) {
+  const c = w.comparison || {};
+  if (!hasRelativeData(c)) {
+    return moduleBlock("本维度缺少可对照的行业或市场数据。", "", materialGaps(w.gaps));
+  }
+  const insight = relativeInsight(c);
+  const raw = stripLeadingFacts(why && why.priority_reason);
+  const body = cleanText(raw) || "三层对照只用于判断应从市场、行业还是公司层面解释本次异动，不做贡献拆分。";
+  return `${moduleBlock(insight, body, materialGaps(w.gaps))}
+    ${compareHtml(c)}`;
+}
+
+function renderDriversModule(brief, drivers) {
+  if (!drivers.length) {
+    return moduleBlock("未发现与本次异动直接相关、且能指向可验证路径的驱动因素。", "", []);
+  }
+  const names = drivers.map((d) => d.name).join("、");
+  const insight = drivers.length === 1
+    ? `${drivers[0].name}是与本次异动相关的主要因素。`
+    : `与本次异动相关的因素有 ${drivers.length} 项：${names}。`;
+  const cards = drivers.map(renderDriverCard).join("");
+  return `${moduleBlock(insight, "", [])}${cards}`;
+}
+
+function renderDriverCard(d) {
+  const role = d.status === "supported" ? "主要解释" : "部分解释";
+  const insight = `${d.name}：${role}。`;
+  const body = uniqueSentence([d.summary, usefulRelevance(d.relevance)].filter(Boolean).join(""));
+  const extras = [];
+  compactRefs(d.supporting_refs, false, body).forEach((item) => extras.push(item.html));
+  compactRefs(d.contradicting_refs, true, body).forEach((item) => extras.push(`反向　${item.html}`));
+  return `<div class="driver">${moduleBlock(insight, body, extras)}</div>`;
+}
+
+function renderMeansModule(brief, drivers) {
+  const overall = brief.what_it_means.overall || {};
+  if (!drivers.length) {
+    return moduleBlock("现有因素尚未确认对公司经营的可验证影响。", "", []);
+  }
+  const insight = cleanText(overall.display) || "相关因素对公司经营的影响需分项阅读。";
+  const body = cleanOverallReason(overall.reason);
+  const cards = drivers.map((d) => renderAssessmentCard(d, drivers)).join("");
+  return `${moduleBlock(insight, body, [])}${cards}`;
+}
+
+function renderAssessmentCard(d, siblings) {
+  const a = d.assessment;
+  const insight = `${d.name}：${a.display_direction}，${a.display_horizon}。`;
+  const body = uniqueSentence([
+    chainParagraph(a, d.name),
+    cleanText(a.exposure_basis),
+  ].filter(Boolean).join(""));
+  const extras = [];
+  ownFactors(d, siblings || [d], "offsetting_factors").forEach((x) => extras.push(`抵消　${esc(x)}`));
+  ownFactors(d, siblings || [d], "amplifying_factors").forEach((x) => extras.push(`放大　${esc(x)}`));
+  if (a.display_strength && !/不足/.test(a.display_strength)) {
+    extras.push(`证据强度　${esc(a.display_strength)}`);
+  }
+  compactRefs(a.exposure_refs, false, body).forEach((item) => extras.push(item.html));
+  return `<div class="assessment">${moduleBlock(insight, body, extras)}</div>`;
+}
+
+function renderWatchModule(questions, gaps) {
+  const items = uniqueTexts(questions);
+  const extras = materialGaps(gaps);
+  if (!items.length && !extras.length) {
+    return moduleBlock("没有足以改变当前判断的待观察事项。", "", []);
+  }
+  const insight = items[0] || extras[0];
+  const body = items.length > 1
+    ? `其余 ${items.length - 1} 项会改变对方向或期限的判断，列于下方。`
+    : "";
+  return moduleBlock(insight, body, items.slice(1).map(esc).concat(extras));
 }
 
 function compareHtml(c) {
   const rows = [
     [c.market, false], [c.industry, false], [c.stock, false],
     [c.industry_vs_market, true], [c.stock_vs_industry, true],
-  ].filter(([m]) => m);
+  ].filter(([m]) => m && m.value !== null && m.value !== undefined);
+  if (!rows.length) return "";
   const max = Math.max(...rows.map(([m]) => Math.abs(m.value || 0)), 0.01);
   return `<div class="compare">${rows.map(([m, derived]) => {
     const v = m.value;
-    const na = v === null || v === undefined;
-    const width = na ? 0 : (Math.abs(v) / max) * 50;
-    const left = na ? 50 : v >= 0 ? 50 : 50 - width;
-    const color = na ? "var(--faint)" : v > 0 ? "var(--up)" : "var(--down)";
+    const width = (Math.abs(v) / max) * 50;
+    const left = v >= 0 ? 50 : 50 - width;
+    const color = v > 0 ? "var(--up)" : "var(--down)";
     return `<div class="compare-row ${derived ? "derived" : ""}">
       <span class="c-label">${esc(m.label)}</span>
       <span class="c-bar"><span class="c-fill" style="left:${left}%;width:${width}%;background:${color}"></span></span>
-      <span class="c-val ${na ? "" : signClass(m)}">${esc(m.display)}</span>
+      <span class="c-val ${signClass(m)}">${esc(m.display)}</span>
     </div>`;
   }).join("")}</div>`;
 }
 
-function renderDriver(d) {
-  return `<div class="driver">
-    <div class="driver-head">
-      <div class="d-title">
-        <h4>${esc(d.name)}</h4>
-        <p class="d-sum">${esc(d.summary)}</p>
-        ${d.relevance ? `<p class="d-rel"><span>与本次异动的关联</span>${esc(d.relevance)}</p>` : ""}
-      </div>
-      <span class="tag cat">${esc(d.category_label)}</span>
-      <span class="tag ${d.status}">${esc(d.status_label)}</span>
-    </div>
-    <div class="driver-body">
-      <span class="subhead">四项验证</span>
-      <div class="checks">${d.checks.map(renderCheck).join("")}</div>
-      ${refBlock("支持证据", d.supporting_refs)}
-      ${refBlock("反向证据", d.contradicting_refs, "本次检索未发现反向证据，不代表不存在。")}
-      ${d.unresolved.length ? `<span class="subhead">待核实</span>
-        <ul class="unresolved">${d.unresolved.map((u) => `<li>${esc(u)}</li>`).join("")}</ul>` : ""}
-    </div>
-  </div>`;
+function materialPriceDrivers(brief) {
+  return (brief.why_happened.drivers || []).filter(isPriceRelevant);
 }
 
-function renderCheck(c) {
-  return `<div class="check">
-    <div class="c-head">
-      <span class="c-name">${esc(c.label)}</span>
-      <span class="c-res ${c.result}">${esc(c.result_label)}</span>
-    </div>
-    <p>${esc(c.reasoning)}</p>
-  </div>`;
+function materialCompanyDrivers(brief) {
+  return materialPriceDrivers(brief).filter(pointsToCompany);
 }
 
-function refBlock(title, refs, empty = "无") {
-  if (!refs || !refs.length) {
-    return `<span class="subhead">${esc(title)}</span><p class="hint">${esc(empty)}</p>`;
-  }
-  return `<span class="subhead">${esc(title)}</span><ul class="ref-list">${refs.map((r) => {
+function isPriceRelevant(d) {
+  if (!d || d.status === "insufficient") return false;
+  const by = Object.fromEntries((d.checks || []).map((c) => [c.key, c]));
+  if (by.timing && by.timing.result === "fail") return false;
+  if (by.mechanism && by.mechanism.result === "fail") return false;
+  const refs = d.supporting_refs || [];
+  if (!refs.length) return false;
+  const usable = refs.filter((r) => {
     const ev = state.evidenceById[r.evidence_id] || {};
-    return `<li>
-      <div class="r-head">
-        <span class="eid" data-eid="${esc(r.evidence_id)}">${esc(r.evidence_id)}</span>
-        <span class="tier">${esc(tierLabel(ev.source_tier))} · ${esc(ev.source_name || "")}</span>
-        <span class="support ${r.support}">对本论点：${esc(supportLabel(r.support))}</span>
-        ${ev.published_at ? `<span class="tier">${esc(ev.published_at)}</span>` : ""}
-      </div>
-      <p class="r-claim">${esc(truncate(ev.claim || "", 160))}</p>
-      ${r.rationale ? `<p class="r-why">${esc(r.rationale)}</p>` : ""}
-    </li>`;
-  }).join("")}</ul>`;
+    return ev.source_tier !== "t4_unverified" && r.support !== "neutral";
+  });
+  return usable.length > 0;
 }
 
-function renderAssessments(brief) {
-  const assessed = brief.why_happened.drivers.filter((d) => d.assessment);
-  if (!assessed.length) {
-    return `<p class="empty-note">没有驱动因素达到进入基本面分析的证据门槛。</p>`;
-  }
-  return assessed.map((d) => {
-    const a = d.assessment;
-    return `<div class="assessment">
-      <div class="a-head">
-        <h4>${esc(d.name)}</h4>
-      </div>
-      <div class="verdict-pills ${a.display_suppressed ? "suppressed" : ""}">
-        <div><span>影响方向</span><b>${esc(a.display_direction)}</b></div>
-        <div><span>影响期限</span><b>${esc(a.display_horizon)}</b></div>
-        <div><span>证据强度</span><b>${esc(a.display_strength)}</b></div>
-      </div>
-      ${a.display_suppressed ? `<div class="suppression">${esc(a.suppression_reason || "")}</div>` : ""}
-      <div class="exposure ${a.exposure_level === "unconfirmed" ? "unconfirmed" : ""}">
-        <span class="e-key">公司暴露</span>
-        <b>${esc(a.exposure_label)}</b>
-        <p>${esc(a.exposure_basis)}</p>
-      </div>
-      <span class="subhead">传导路径</span>
-      <ol class="chain">${a.chain.map((s) =>
-        `<li class="${s.is_conditional ? "conditional" : ""}">${esc(s.text)}
-          ${s.is_conditional ? `<span class="cond-tag">条件性推断</span>` : ""}</li>`
-      ).join("")}</ol>
-      <span class="subhead">情景因素</span>
-      <div class="factor-cols">
-        ${factorCol("抵消因素", a.offsetting_factors)}
-        ${factorCol("放大因素", a.amplifying_factors)}
-        ${factorCol("关键未知", a.key_unknowns)}
-      </div>
-      <span class="subhead">判断依据</span>
-      <div class="reasons">
-        <div><span class="r-key">方向</span>${esc(a.direction_reason || "—")}</div>
-        <div><span class="r-key">期限</span>${esc(a.horizon_reason || "—")}</div>
-        <div><span class="r-key">证据强度</span>${esc(a.strength_reason || "—")}</div>
-      </div>
-      ${refBlock("公司暴露证据", a.exposure_refs)}
-    </div>`;
-  }).join("");
+function pointsToCompany(d) {
+  const a = d.assessment;
+  if (!a || a.display_suppressed) return false;
+  if (a.exposure_level === "unconfirmed") return false;
+  if (/暂无法可靠判断/.test(a.display_direction || "")) return false;
+  return true;
 }
 
-function renderOpenQuestions(questions) {
-  if (!questions || !questions.length) {
-    return `<p class="empty-note">本次没有遗留待观察事项。</p>`;
-  }
-  const groups = [];
-  const index = new Map();
-  questions.forEach((q) => {
+function watchableQuestions(brief, drivers) {
+  const allow = new Set(drivers.map((d) => d.name));
+  const raw = (brief.open_questions && brief.open_questions.questions) || [];
+  return raw.map((q) => {
     const m = String(q).match(/^【([^】]+)】(.*)$/);
-    if (m) {
-      if (!index.has(m[1])) {
-        const g = { title: m[1], items: [] };
-        index.set(m[1], g);
-        groups.push(g);
-      }
-      index.get(m[1]).items.push(m[2]);
+    const text = m ? m[2] : q;
+    if (/市场层面的普遍因素|无法据此判断|无法判定/.test(text || "")) return "";
+    if (!m) return cleanText(q);
+    if (allow.size && !allow.has(m[1])) {
+      return /未被解释/.test(m[2]) ? cleanText(m[2]) : "";
+    }
+    return cleanText(`${m[1]}：${m[2]}`);
+  }).filter((q) => q && !isVague(q));
+}
+
+function ownFactors(d, siblings, key) {
+  const mine = ((d.assessment && d.assessment[key]) || []).filter((x) => !isVague(x));
+  const peers = siblings || [d];
+  return mine.filter((x) => {
+    if (d.name && x.includes(d.name.slice(0, 10))) return false;
+    if (peers.length >= 2 && peers.every((s) => ((s.assessment && s.assessment[key]) || []).includes(x))) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function compactRefs(refs, counter = false, overlapText = "") {
+  const items = [];
+  const seen = [];
+  for (const r of refs || []) {
+    if (counter && !(r.support === "weakens" || r.support === "refutes")) continue;
+    if (!counter && (r.support === "neutral" || r.support === "weakens" || r.support === "refutes")) continue;
+    const ev = state.evidenceById[r.evidence_id] || {};
+    if (ev.source_tier === "t4_unverified") continue;
+    const claim = ev.claim || "";
+    const key = normText(claim || r.evidence_id);
+    if (!key || seen.some((s) => s.includes(key) || key.includes(s))) continue;
+    seen.push(key);
+    const label = overlapText && sameMeaning(claim, overlapText)
+      ? ""
+      : ` ${esc(truncate(claim, 72))}`;
+    items.push({
+      html: `<span class="eid" data-eid="${esc(r.evidence_id)}">${esc(r.evidence_id)}</span>${label}`,
+    });
+    if (items.length >= 2) break;
+  }
+  return items;
+}
+
+function chainParagraph(a, driverName) {
+  const steps = (a.chain || []).map((s) => s.text || "").filter((t) => {
+    if (isVague(t)) return false;
+    if (/^事件事实/.test(t) && t.includes(driverName)) return false;
+    if (/公司暴露：/.test(t) && /确认|无法确认/.test(t)) return false;
+    if (/传导链在此中断/.test(t)) return false;
+    return true;
+  });
+  if (!steps.length) return "";
+  return uniqueSentence(steps.map((t) => t.replace(/[。；]$/, "")).join("；") + "。");
+}
+
+function relativeInsight(c) {
+  const vs = c.stock_vs_industry;
+  if (vs && vs.value !== null && vs.value !== undefined) {
+    const word = vs.value < -0.002 ? "弱于" : vs.value > 0.002 ? "强于" : "贴近";
+    return `个股相对行业${word}行业（${vs.display}）。`;
+  }
+  const bits = [];
+  if (c.stock && c.stock.display) bits.push(`个股 ${c.stock.display}`);
+  if (c.industry && c.industry.display) bits.push(`行业 ${c.industry.display}`);
+  if (c.market && c.market.display) bits.push(`市场 ${c.market.display}`);
+  return bits.length ? `${bits.join("，")}。` : "相对表现可核对，但缺少背离幅度。";
+}
+
+function hasRelativeData(c) {
+  return [c.stock, c.industry, c.market].some((m) => m && m.value !== null && m.value !== undefined);
+}
+
+function usefulRelevance(rel) {
+  if (!rel) return "";
+  const cut = String(rel)
+    .replace(/发生在核心证据窗口内[；。]?/g, "")
+    .replace(/\d+ 个独立信源确认[；。]?/g, "")
+    .replace(/共 \d+ 篇报道[；。]?/g, "")
+    .replace(/来源无法确认，仅作检索线索[；。]?/g, "")
+    .trim();
+  return isVague(cut) ? "" : cut;
+}
+
+function cleanOverallReason(text) {
+  const t = cleanText(text);
+  if (!t) return "";
+  if (/请分别查看每个驱动因素/.test(t)) {
+    return "不同因素的经营影响方向不一致，故不作合并，分项评估。";
+  }
+  return t;
+}
+
+function materialGaps(gaps) {
+  return (gaps || []).filter((g) => g && g.reason && !/检索线索/.test(g.reason))
+    .map((g) => esc(`${g.reason}${g.impact ? `，${g.impact}` : ""}`));
+}
+
+function measureValue(m) {
+  return `<span class="${signClass(m)}">${esc(m.display)}</span>`;
+}
+
+function stripLeadingFacts(text) {
+  return String(text || "").replace(/^市场[^。]*。/, "").trim();
+}
+
+function cleanText(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function isVague(text) {
+  const t = String(text || "").trim();
+  if (!t || t === "—" || t === "无") return true;
+  return /无法判定|暂无法可靠判断|未发现\s*\/\s*未能确认|不代表不存在|仅作检索|来源无法确认/.test(t);
+}
+
+function normText(text) {
+  return String(text || "").replace(/\s+/g, "").replace(/[。；;,.、：:]/g, "");
+}
+
+function sameMeaning(a, b) {
+  const x = normText(a), y = normText(b);
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
+}
+
+function uniqueTexts(items) {
+  const out = [];
+  (items || []).forEach((item) => {
+    const raw = String(item || "").trim();
+    if (!raw) return;
+    const n = normText(raw.replace(/<[^>]+>/g, ""));
+    if (n.length < 4) {
+      out.push(raw);
       return;
     }
-    groups.push({ title: "", items: [q] });
+    const idx = out.findIndex((x) => {
+      const m = normText(String(x).replace(/<[^>]+>/g, ""));
+      return m.includes(n) || n.includes(m);
+    });
+    if (idx === -1) out.push(raw);
+    else if (normText(String(out[idx]).replace(/<[^>]+>/g, "")).length < n.length) out[idx] = raw;
   });
-  return groups.map((g) => `
-    <div class="q-group">
-      ${g.title ? `<h4>${esc(g.title)}</h4>` : ""}
-      <ul class="open-list">${g.items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
-    </div>`).join("");
+  return out;
 }
 
-function factorCol(title, items) {
-  const empty = !items || !items.length;
-  return `<div class="factor-col ${empty ? "empty" : ""}">
-    <h5>${esc(title)}</h5>
-    <ul>${empty ? "<li>未发现 / 未能确认</li>" : items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
-  </div>`;
-}
-
-function gapsHtml(gaps, title) {
-  if (!gaps || !gaps.length) return "";
-  return `<div class="gaps"><span class="subhead">${esc(title)}</span>` +
-    gaps.map((g) => `<div class="gap"><b>${esc(g.field)}</b>：${esc(g.reason)}
-      <p>影响：${esc(g.impact)}</p></div>`).join("") + `</div>`;
+function uniqueSentence(text) {
+  const parts = String(text || "").split(/[。]/).map((s) => s.trim()).filter(Boolean);
+  return uniqueTexts(parts).map((s) => (/[。！？]$/.test(s) ? s : `${s}。`)).join("");
 }
 
 function bindReply(root) {

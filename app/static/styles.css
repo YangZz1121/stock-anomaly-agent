@@ -282,6 +282,24 @@ button.ghost:disabled { opacity: .4; cursor: not-allowed; }
   color: var(--faint); letter-spacing: .06em;
 }
 .empty-note { color: var(--faint); font-size: 13px; margin: 8px 0 0; }
+.mod { margin: 0; }
+.mod-insight {
+  margin: 0; font-size: 15px; font-weight: 650; line-height: 1.65; color: var(--text);
+}
+.mod-body {
+  margin: 8px 0 0; font-size: 14px; line-height: 1.7; color: var(--text);
+}
+.mod-extra {
+  list-style: none; padding: 0; margin: 10px 0 0;
+  border-top: 1px solid var(--border);
+}
+.mod-extra li {
+  padding: 6px 0; font-size: 12.5px; color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.mod-extra li:last-child { border-bottom: 0; }
+.hero .mod-insight { font-size: 15px; font-weight: 500; }
+.hero .mod-body { color: var(--muted); }
 
 .measure-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px;
@@ -310,7 +328,7 @@ button.ghost:disabled { opacity: .4; cursor: not-allowed; }
 .fact-meta span:first-child { color: var(--faint); }
 .fact-meta b { color: var(--text); font-weight: 600; }
 
-.compare { display: flex; flex-direction: column; gap: 8px; }
+.compare { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .compare-row {
   display: grid; grid-template-columns: 108px 1fr 80px; align-items: center; gap: 10px;
 }
@@ -346,7 +364,8 @@ button.ghost:disabled { opacity: .4; cursor: not-allowed; }
 .clue-box p { margin: 0; font-size: 12.5px; color: var(--muted); }
 
 .driver {
-  border: 1px solid var(--border); border-radius: 14px; margin-top: 10px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 14px; margin-top: 10px;
+  padding: 12px 14px;
 }
 .driver-head {
   display: flex; align-items: flex-start; gap: 8px; padding: 12px 14px;
@@ -414,6 +433,8 @@ button.ghost:disabled { opacity: .4; cursor: not-allowed; }
 .overall p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
 
 .assessment { border: 1px solid var(--border); border-radius: 14px; margin-top: 12px; padding: 14px 16px; }
+.assessment .mod-insight { font-size: 14.5px; }
+.driver .mod-insight { font-size: 14.5px; }
 .assessment .a-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .assessment h4 { margin: 0 0 8px; font-size: 14.5px; }
 .verdict-pills {

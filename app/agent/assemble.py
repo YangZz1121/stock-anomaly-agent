@@ -287,25 +287,58 @@ def merge_refs(base: List[EvidenceRef], extra: List[EvidenceRef]) -> List[Eviden
     return base + [r for r in extra if r.evidence_id not in seen]
 
 
+_SKIP_QUESTION_FRAGMENTS = (
+    "不足以解释个股相对行业的全部额外变化",
+    "仍有未被解释的部分",
+    "特异性仅部分成立",
+    "机制合理性仅部分成立",
+    "横截面吻合仅部分成立",
+    "时间吻合仅部分成立",
+    "无法判定",
+    "当前没有任何来源可确认的证据",
+    "来源无法确认的信息只能作为检索线索",
+)
+
+
+def _is_watchable_question(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 8:
+        return False
+    return not any(frag in t for frag in _SKIP_QUESTION_FRAGMENTS)
+
+
 def build_open_questions(
     drivers: List[Driver],
     gaps: List[DataGap],
     industry: IndustryInfo,
 ) -> OpenQuestionsSection:
     questions: List[str] = []
-    for driver in drivers:
+    residual = False
+    material = [
+        d for d in drivers if d.status in (DriverStatus.SUPPORTED, DriverStatus.PARTIALLY_SUPPORTED)
+    ]
+    for driver in material:
         for item in driver.unresolved:
-            questions.append(f"【{driver.name}】{item}")
+            if "不足以解释个股相对行业" in item:
+                residual = True
+                continue
+            if _is_watchable_question(item):
+                questions.append(f"【{driver.name}】{item}")
         if driver.assessment:
             for unknown in driver.assessment.key_unknowns:
-                questions.append(f"【{driver.name}】{unknown}")
-    if industry.is_weak_evidence:
+                if "不足以解释个股相对行业" in unknown:
+                    residual = True
+                    continue
+                if _is_watchable_question(unknown):
+                    questions.append(f"【{driver.name}】{unknown}")
+    if residual:
+        questions.append("个股相对行业仍有未被解释的额外变化，需继续观察公司特有催化。")
+    if industry.is_weak_evidence and industry.index_name:
         questions.append(
-            f"所属行业（{industry.index_name}）由模型推断而非结构化数据确认，"
-            "行业层面的比较结论需要额外谨慎对待。"
+            f"所属行业（{industry.index_name}）尚未被结构化数据确认，行业对照需谨慎使用。"
         )
-    if not drivers:
-        questions.append("本次研究没有形成任何候选驱动因素，价格变化的原因尚未被解释。")
+    if not material:
+        questions.append("本次未找到可确认的异动解释，价格变化原因仍待观察。")
 
     seen = set()
     unique = []
