@@ -50,6 +50,17 @@ uvicorn app.main:app --port 8000
 pytest -q          # 138 项，全部离线，无需网络和密钥
 ```
 
+### 数据源自检
+
+配好密钥之后先跑这个，逐条确认哪个数据源真的通了，
+以及产品这次到底走的是真实接口还是降级到了构造数据集：
+
+```bash
+python scripts/check_providers.py
+```
+
+它只打印调用结果和实际命中的 source，**不打印任何密钥内容**。
+
 ### Docker
 
 ```bash
