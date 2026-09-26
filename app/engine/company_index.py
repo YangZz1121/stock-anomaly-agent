@@ -14,6 +14,27 @@ DEFAULT_THRESHOLD = 0.8
 _LEGAL_TAIL = re.compile(
     r"(集团股份有限公司|股份有限公司|有限责任公司|控股有限公司|股份公司|有限公司|集团)$"
 )
+_SECTOR_TOKENS = {
+    "科技股",
+    "银行股",
+    "白酒股",
+    "券商股",
+    "地产股",
+    "煤炭股",
+    "钢铁股",
+    "医药股",
+    "消费股",
+    "新能源股",
+    "创业板",
+    "科创板",
+    "主板",
+    "板块",
+    "行业",
+    "大盘",
+    "沪深",
+    "个股",
+    "股票",
+}
 _GENERIC_TOKENS = {
     "公司",
     "股份",
@@ -200,7 +221,11 @@ def _pair_score(query: str, label: str) -> float:
             if len(lab) >= 2 and lab in q:
                 best = max(best, max(0.8, len(lab) / len(q)))
                 continue
-            if len(q) >= 3 and q in lab:
+            if (
+                len(q) >= 3
+                and q in lab
+                and (lab.startswith(q) or len(q) / len(lab) >= 0.7)
+            ):
                 best = max(best, max(0.8, len(q) / len(lab)))
                 continue
             if len(q) == 2 and q in lab and len(lab) <= 6:
@@ -210,11 +235,24 @@ def _pair_score(query: str, label: str) -> float:
     return best
 
 
+_SCREEN_QUERY = re.compile(
+    r"(有没有|有哪些|哪些股票|哪只|哪几只|有明显异动|异动的股票|异动的股)"
+)
+
+
+def is_sector_token(text: str) -> bool:
+    return (text or "").strip() in _SECTOR_TOKENS
+
+
+def is_screen_query(text: str) -> bool:
+    return bool(text and _SCREEN_QUERY.search(text))
+
+
 def match_company(
     text: str, threshold: Optional[float] = None
 ) -> Optional[CompanyMatch]:
     query = (text or "").strip()
-    if not query:
+    if not query or is_sector_token(query):
         return None
     catalog = _catalog()
     cutoff = catalog.threshold if threshold is None else threshold
@@ -241,7 +279,12 @@ def match_company(
         if label in folded or (normalized and label in normalized):
             record = _prefer(records)
             _consider(record, label, max(0.8, len(label) / max(len(folded), 1)))
-        elif len(folded) >= 3 and folded in label and len(label) <= 12:
+        elif (
+            len(folded) >= 3
+            and folded in label
+            and len(label) <= 12
+            and (label.startswith(folded) or len(folded) / len(label) >= 0.7)
+        ):
             record = _prefer(records)
             _consider(record, label, max(0.8, len(folded) / len(label)))
 

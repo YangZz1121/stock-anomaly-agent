@@ -21,6 +21,7 @@ from app.contracts import (
     SupportLevel,
 )
 from app.engine import guardrails, presenter
+from app.engine.ashare import LIMIT_LABELS
 from app.engine.price_profile import describe_close_position, describe_turnover
 from app.engine.verdict import (
     StrengthInput,
@@ -35,6 +36,7 @@ from app.providers.registry import ProviderBundle
 from app.schemas import (
     Driver,
     FundamentalAssessment,
+    AnomalyInfo,
     IndustryInfo,
     OpenQuestionsSection,
     OverallVerdict,
@@ -87,6 +89,7 @@ def build_what_happened(
     window_label: str,
     stock_evidence_id: str,
     gaps: List[DataGap],
+    anomaly=None,
 ) -> WhatHappenedSection:
     measures = []
     if daily_profile is not None:
@@ -114,6 +117,18 @@ def build_what_happened(
                               caliber=p.caliber("turnover_ratio"),
                               note=describe_turnover(p.turnover_ratio)),
         ]
+        if p.limit_state:
+            measures.append(
+                presenter.measure(
+                    "limit_state",
+                    "涨跌停",
+                    1.0,
+                    LIMIT_LABELS.get(p.limit_state, p.limit_state),
+                    unit=None,
+                    caliber="相对前收盘触及板块涨跌停幅度",
+                    note=LIMIT_LABELS.get(p.limit_state, p.limit_state),
+                )
+            )
     else:
         wp = window_profile
         measures = [
@@ -159,8 +174,22 @@ def build_what_happened(
         PricePattern.SINGLE_DAY if daily_profile is not None else window_profile.pattern
     )
     summary = _summarize_what_happened(
-        stock, window_label, daily_profile, window_profile, comparison
+        stock, window_label, daily_profile, window_profile, comparison, anomaly
     )
+    anomaly_info = None
+    if anomaly is not None:
+        anomaly_info = AnomalyInfo(
+            is_anomaly=anomaly.is_anomaly,
+            board=anomaly.board,
+            board_label=anomaly.board_label,
+            limit_pct=anomaly.limit_pct,
+            reasons=list(anomaly.reasons),
+            z_score=anomaly.z_score,
+            limit_state=anomaly.limit_state,
+            exchange_hits=list(anomaly.exchange_hits),
+            volume_surge=anomaly.volume_surge,
+            note=anomaly.note,
+        )
     return WhatHappenedSection(
         measures=measures,
         pattern=pattern,
@@ -168,6 +197,7 @@ def build_what_happened(
         pattern_reason=window_profile.pattern_reason,
         comparison=comparison,
         industry=industry,
+        anomaly=anomaly_info,
         series=series,
         summary=summary,
         gaps=[g for g in gaps if not g.field.startswith("evidence")],
@@ -175,7 +205,7 @@ def build_what_happened(
 
 
 def _summarize_what_happened(
-    stock, window_label, daily_profile, window_profile, comparison
+    stock, window_label, daily_profile, window_profile, comparison, anomaly=None
 ) -> str:
     """封面导语：先写价格事实，再写相对表现。一句一事，便于扫描。"""
     sentences: List[str] = []
@@ -206,6 +236,11 @@ def _summarize_what_happened(
         if vs and vs.value is not None:
             relative += f"个股相对行业 {vs.display}。"
         sentences.append(relative)
+    if anomaly is not None:
+        if anomaly.is_anomaly:
+            sentences.append(f"异动闸门判定为需要归因（{anomaly.board_label}）。")
+        else:
+            sentences.append("异动闸门判定为未见显著异动。")
     return "".join(sentences)
 
 
@@ -261,7 +296,21 @@ def build_assessment(
         exposure_basis=draft.exposure_basis,
         exposure_refs=exposure_refs,
         chain=[
-            TransmissionStep(text=s.text, is_conditional=s.is_conditional)
+            TransmissionStep(
+                text=s.text,
+                is_conditional=s.is_conditional,
+                evidence_refs=[
+                    EvidenceRef(
+                        evidence_id=eid,
+                        support=SupportLevel.SUPPORTS,
+                        rationale="支撑该传导环节。",
+                    )
+                    for eid in getattr(s, "evidence_ids", []) or []
+                    if eid in ledger
+                ],
+                link=getattr(s, "link", "") or "",
+                link_status=getattr(s, "status", "present") or "present",
+            )
             for s in draft.chain
         ],
         offsetting_factors=draft.offsetting_factors,
@@ -279,6 +328,7 @@ def build_assessment(
         direction_reason=draft.direction_reason,
         horizon_reason=horizon_reason,
         strength_reason=strength_result.reason,
+        missing_links=list(strength_result.missing_links),
     )
 
 
@@ -331,6 +381,10 @@ def build_open_questions(
                     continue
                 if _is_watchable_question(unknown):
                     questions.append(f"【{driver.name}】{unknown}")
+            for link in driver.assessment.missing_links:
+                item = f"证据链仍缺：{link}"
+                if _is_watchable_question(item):
+                    questions.append(f"【{driver.name}】{item}")
     if residual:
         questions.append("个股相对行业仍有未被解释的额外变化，需继续观察公司特有催化。")
     if industry.is_weak_evidence and industry.index_name:
@@ -405,6 +459,10 @@ def apply_guardrails(brief: ResearchBrief, recorder: RunRecorder) -> None:
         hits += h
         driver.relevance, h = guardrails.sanitize(driver.relevance)
         hits += h
+        driver.thesis, h = guardrails.sanitize(driver.thesis)
+        hits += h
+        driver.viewpoint, h = guardrails.sanitize(driver.viewpoint)
+        hits += h
         driver.unresolved, h = guardrails.sanitize_list(driver.unresolved)
         hits += h
         for check in driver.checks:
@@ -424,6 +482,8 @@ def apply_guardrails(brief: ResearchBrief, recorder: RunRecorder) -> None:
         a.amplifying_factors, h = guardrails.sanitize_list(a.amplifying_factors)
         hits += h
         a.key_unknowns, h = guardrails.sanitize_list(a.key_unknowns)
+        hits += h
+        a.missing_links, h = guardrails.sanitize_list(a.missing_links)
         hits += h
         for step in a.chain:
             step.text, h = guardrails.sanitize(step.text)

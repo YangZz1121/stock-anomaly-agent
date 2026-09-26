@@ -87,7 +87,27 @@ class LayerComparison(BaseModel):
     market: Optional[Measure] = None
     industry_vs_market: Optional[Measure] = None
     stock_vs_industry: Optional[Measure] = None
+    industry_vs_market_raw: Optional[Measure] = None
+    stock_vs_industry_raw: Optional[Measure] = None
+    beta_market: Optional[Measure] = None
+    beta_industry: Optional[Measure] = None
+    residual_note: Optional[str] = None
     disclaimer: str = "三层对比仅用于确定研究优先级，不代表各层对本次价格变化的因果贡献。"
+
+
+class AnomalyInfo(BaseModel):
+    """检测层结论：这是不是一次需要归因的异动。"""
+
+    is_anomaly: bool
+    board: str
+    board_label: str
+    limit_pct: float
+    reasons: List[str] = Field(default_factory=list)
+    z_score: Optional[float] = None
+    limit_state: Optional[str] = None
+    exchange_hits: List[str] = Field(default_factory=list)
+    volume_surge: bool = False
+    note: str = ""
 
 
 class PricePoint(BaseModel):
@@ -111,6 +131,7 @@ class WhatHappenedSection(BaseModel):
     pattern_reason: str
     comparison: LayerComparison
     industry: IndustryInfo
+    anomaly: Optional[AnomalyInfo] = None
     series: List[PricePoint] = Field(default_factory=list)
     summary: str
     gaps: List[DataGap] = Field(default_factory=list)
@@ -131,6 +152,8 @@ class TransmissionStep(BaseModel):
     text: str
     is_conditional: bool = False  # 是否带"若…则…"条件
     evidence_refs: List[EvidenceRef] = Field(default_factory=list)
+    link: str = ""  # event | exposure | mechanism | direction | horizon
+    link_status: str = "present"  # present | missing
 
 
 class FundamentalAssessment(BaseModel):
@@ -161,6 +184,7 @@ class FundamentalAssessment(BaseModel):
     direction_reason: str = ""
     horizon_reason: str = ""
     strength_reason: str = ""
+    missing_links: List[str] = Field(default_factory=list)
 
 
 class Driver(BaseModel):
@@ -179,6 +203,16 @@ class Driver(BaseModel):
     checks: List[DriverCheck] = Field(default_factory=list)
     unresolved: List[str] = Field(default_factory=list)
     assessment: Optional[FundamentalAssessment] = None  # 证据不足的驱动不进入第三阶段
+    # 第三部分卡片：极性 + 短观点 + 星级，避免直接铺新闻
+    polarity: str = "uncertain"
+    polarity_label: str = "待确认"
+    thesis: str = ""
+    viewpoint: str = ""
+    impact_stars: int = 0
+    explain_stars: int = 0
+    impact_reason: str = ""
+    explain_reason: str = ""
+    direction_confirmed: bool = False
 
 
 class WhyHappenedSection(BaseModel):
@@ -262,4 +296,30 @@ class ResearchBrief(BaseModel):
     evidence: List[Evidence] = Field(default_factory=list)
     metrics: RunMetrics
     trace: ResearchTrace
+    disclaimers: List[str] = Field(default_factory=list)
+
+
+class SectorMover(BaseModel):
+    stock: StockRef
+    industry_name: str
+    window_pct: Optional[float] = None
+    is_anomaly: bool = False
+    z_score: Optional[float] = None
+    reasons: List[str] = Field(default_factory=list)
+    limit_state: Optional[str] = None
+
+
+class SectorScreenResult(BaseModel):
+    """板块扫描：只做异动检测，不展开个股归因。"""
+
+    kind: Literal["sector_screen"] = "sector_screen"
+    run_id: str = ""
+    query: str
+    sector_label: str
+    industries: List[str] = Field(default_factory=list)
+    window: WindowInfo
+    movers: List[SectorMover] = Field(default_factory=list)
+    scanned_count: int = 0
+    capped: bool = False
+    note: str = ""
     disclaimers: List[str] = Field(default_factory=list)

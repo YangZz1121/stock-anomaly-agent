@@ -11,6 +11,8 @@ from typing import Any, Optional
 from app.agent.actions import PLANNER_TOOLS, TOOL_SPECS, ActionName, AgentAction
 from app.agent.memory import AgentMemory
 from app.agent.prompts import PLANNER_SCHEMA, PLANNER_SYSTEM
+from app.contracts import ResearchPriority
+from app.engine.chain_logic import diagnose_patch
 
 
 class HeuristicPlanner:
@@ -33,6 +35,11 @@ class HeuristicPlanner:
         asked = memory.ask_if_needed()
         if asked is not None:
             return asked
+        if memory.priority == ResearchPriority.NO_ANOMALY:
+            return AgentAction(
+                name=ActionName.ASSEMBLE_BRIEF,
+                reason="未见显著异动，跳过资讯检索与归因",
+            )
         if not memory.has("retrieved"):
             return AgentAction(
                 name=ActionName.SEARCH_EVIDENCE,
@@ -56,6 +63,19 @@ class HeuristicPlanner:
                 name=ActionName.ASSESS_MECHANISMS,
                 reason="验证每个候选的时间、横截面、特异性和机制",
             )
+        if (
+            not memory.has("patched")
+            and memory.extra_searches < self.extra_search_limit
+        ):
+            plan = diagnose_patch(memory)
+            if plan is not None:
+                memory.pending_patch = plan
+                return AgentAction(
+                    name=ActionName.SEARCH_EVIDENCE,
+                    reason=plan.reason,
+                    scopes=plan.scopes,
+                    extra_terms=plan.extra_terms,
+                )
         if not memory.has("counter"):
             return AgentAction(
                 name=ActionName.SEARCH_COUNTER,
@@ -83,7 +103,11 @@ class LLMPlanner:
 
     async def next(self, memory: AgentMemory) -> AgentAction:
         forced = self._fallback.next(memory)
-        if forced.name in (ActionName.RESOLVE_SUBJECT, ActionName.FETCH_SNAPSHOT):
+        if forced.name in (
+            ActionName.RESOLVE_SUBJECT,
+            ActionName.FETCH_SNAPSHOT,
+            ActionName.SEARCH_EVIDENCE,
+        ):
             return forced
         if forced.name == ActionName.ASK_USER:
             return forced
@@ -179,6 +203,8 @@ def is_legal(action: AgentAction, memory: AgentMemory, extra_limit: int) -> bool
         field = action.field or "continue"
         return field not in memory.answers and not memory.has(f"asked:{field}")
     if action.name == ActionName.ASSEMBLE_BRIEF:
+        if memory.priority == ResearchPriority.NO_ANOMALY:
+            return memory.has("snapshot")
         return memory.has("transmitted")
     return False
 

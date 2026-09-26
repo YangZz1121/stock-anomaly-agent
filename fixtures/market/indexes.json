@@ -1,7 +1,7 @@
 {
   "market_index": {
-    "thscode": "000001.SH",
-    "name": "上证指数"
+    "thscode": "000300.SH",
+    "name": "沪深300"
   },
   "industry_indexes": [
     {
@@ -19,6 +19,10 @@
     {
       "thscode": "886060.TI",
       "name": "汽车整车"
+    },
+    {
+      "thscode": "886070.TI",
+      "name": "半导体"
     }
   ],
   "constituents": {
@@ -34,6 +38,9 @@
     ],
     "886060.TI": [
       "002594.SZ"
+    ],
+    "886070.TI": [
+      "300750.SZ"
     ]
   }
 }

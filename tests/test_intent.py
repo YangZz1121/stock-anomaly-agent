@@ -125,6 +125,31 @@ def test_classifies_why_without_stock_as_need_stock():
     assert intent.kind == IntentKind.NEED_STOCK
 
 
+def test_sector_screen_does_not_bind_listed_company():
+    intent = classify_intent("科技股最近有明显异动的股票么")
+    assert intent.kind == IntentKind.NEED_WINDOW
+    assert intent.parsed.search_keys == []
+    assert intent.sector_label == "科技股"
+    assert "半导体" in intent.sector_names
+
+
+def test_sector_screen_ignores_invented_company_and_context():
+    intent = classify_intent(
+        "科技股最近有明显异动的股票么",
+        context=ConversationContext(stocks=["贵州茅台"], window=ResearchWindow.D5),
+        resolved_keys=["隆基绿能"],
+    )
+    assert intent.kind == IntentKind.SECTOR_SCREEN
+    assert intent.parsed.search_keys == []
+    assert intent.sector_label == "科技股"
+
+
+def test_named_company_anomaly_question_still_routes():
+    intent = classify_intent("宁德时代最近有明显异动么")
+    assert intent.kind == IntentKind.NEED_WINDOW
+    assert intent.parsed.search_keys == ["宁德时代"]
+
+
 def test_followup_full_anomaly_inherits_recent_company():
     intent = classify_intent(
         "写一份完整的异动",
@@ -147,6 +172,39 @@ def test_followup_inherits_company_from_prior_user_query():
     assert intent.parsed.name_hint == "宁德时代"
 
 
+def test_followup_uses_latest_company_not_earlier_one():
+    intent = classify_intent(
+        "写一份完整的异动",
+        window=ResearchWindow.D5,
+        context=ConversationContext(
+            queries=["宁德时代今天怎么了", "贵州茅台今天为什么跌了"],
+            stocks=["宁德时代"],
+        ),
+    )
+    assert intent.parsed.search_keys == ["贵州茅台"]
+    assert intent.inherited_from_context is True
+
+
+def test_switch_company_does_not_keep_previous_topic():
+    intent = classify_intent(
+        "改看茅台今天怎么了",
+        window=ResearchWindow.TODAY,
+        context=ConversationContext(stocks=["宁德时代"], window=ResearchWindow.D5),
+    )
+    assert intent.parsed.search_keys == ["贵州茅台"]
+    assert intent.inherited_from_context is False
+
+
+def test_compare_followup_merges_latest_and_new_company():
+    intent = classify_intent(
+        "和茅台对比一下",
+        window=ResearchWindow.TODAY,
+        context=ConversationContext(stocks=["宁德时代"], window=ResearchWindow.TODAY),
+    )
+    assert intent.kind == IntentKind.REPORT
+    assert intent.parsed.search_keys == ["贵州茅台", "宁德时代"]
+
+
 def test_followup_without_history_still_asks_stock():
     intent = classify_intent("写一份完整的异动")
     assert intent.kind == IntentKind.NEED_STOCK
@@ -158,6 +216,22 @@ def test_greeting_does_not_inherit_recent_company():
         context=ConversationContext(stocks=["宁德时代"]),
     )
     assert intent.kind == IntentKind.NONSENSE
+
+
+def test_http_sector_screen_asks_for_window(monkeypatch):
+    client = TestClient(app)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("未选窗口的板块问句不应进入研究链路")
+
+    monkeypatch.setattr("app.main.build_providers", boom)
+    response = client.post(
+        "/api/research", json={"query": "科技股最近有明显异动的股票么"}
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "need_window"
+    assert "科技股" in detail["message"]
 
 
 def test_http_nonsense_does_not_build_providers(monkeypatch):

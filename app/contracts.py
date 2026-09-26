@@ -313,6 +313,7 @@ class ResearchPriority(str, Enum):
     INDUSTRY_FIRST = "industry_first"
     COMPANY_FIRST = "company_first"
     INDUSTRY_PLUS_COMPANY = "industry_plus_company"
+    NO_ANOMALY = "no_anomaly"
 
 
 PRIORITY_LABELS: Dict[str, str] = {
@@ -320,6 +321,7 @@ PRIORITY_LABELS: Dict[str, str] = {
     ResearchPriority.INDUSTRY_FIRST.value: "行业优先",
     ResearchPriority.COMPANY_FIRST.value: "公司特有因素优先",
     ResearchPriority.INDUSTRY_PLUS_COMPANY.value: "行业因素 + 公司特有因素并重",
+    ResearchPriority.NO_ANOMALY.value: "未见显著异动",
 }
 
 

@@ -23,23 +23,12 @@ const state = {
 
 const EXAMPLES = [
   { q: "宁德时代最近5个交易日怎么一直跌？", w: "d5" },
+  { q: "科技股最近有明显异动的股票么", w: "d5" },
   { q: "贵州茅台今天为什么跌了？", w: "today" },
   { q: "宁德时代和贵州茅台今天异动对比", w: "today" },
 ];
 
 async function init() {
-  $("sideExamples").innerHTML = EXAMPLES.map((e, i) =>
-    `<button class="side-ex" type="button" data-i="${i}">${esc(e.q)}</button>`
-  ).join("");
-  $("sideExamples").addEventListener("click", (ev) => {
-    const btn = ev.target.closest(".side-ex");
-    if (!btn) return;
-    const ex = EXAMPLES[Number(btn.dataset.i)];
-    $("queryInput").value = ex.q;
-    setWindow(ex.w);
-    run();
-  });
-
   try {
     const cfg = await (await fetch("/api/config")).json();
     state.windows = cfg.windows || [];
@@ -56,7 +45,6 @@ async function init() {
   });
   $("queryInput").addEventListener("input", autosize);
   $("newChatBtn").addEventListener("click", resetThread);
-  $("sidebarToggle").addEventListener("click", () => $("sidebar").classList.toggle("open"));
   $("evidenceBtn").addEventListener("click", () => state.brief && openDrawer("evidence"));
   $("traceBtn").addEventListener("click", () => state.brief && openDrawer("trace"));
   $("drawerClose").addEventListener("click", closeDrawer);
@@ -74,12 +62,6 @@ async function init() {
 }
 
 function renderProviders(cfg) {
-  $("sideStatus").innerHTML = [
-    ["行情", cfg.providers.market],
-    ["资讯", cfg.providers.evidence],
-    ["推理", cfg.providers.llm],
-  ].map(([k, v]) => `${k} <b>${esc(v)}</b>`).join("<br>");
-
   if (cfg.degraded && cfg.notices.length) {
     $("degradedBanner").classList.remove("hidden");
     $("degradedBanner").innerHTML =
@@ -117,6 +99,9 @@ function autosize() {
 
 function resetThread() {
   if (state.source) state.source.close();
+  state.source = null;
+  clearInterval(state.timer);
+  state.timer = null;
   state.messages = [];
   state.brief = null;
   state.evidenceById = {};
@@ -124,9 +109,10 @@ function resetThread() {
   state.pendingAnswers = {};
   $("evidenceBtn").disabled = true;
   $("traceBtn").disabled = true;
-  state.brief = null;
+  $("runBtn").disabled = false;
   $("queryInput").value = "";
   autosize();
+  closeDrawer();
   paintThread();
 }
 
@@ -164,6 +150,7 @@ function run(presetQuery) {
     elapsed: "0.0s",
     brief: null,
     briefs: [],
+    sector: null,
     notice: "",
     taskLabel: "",
     error: null,
@@ -179,6 +166,7 @@ function run(presetQuery) {
   if (ctx.stocks.length) params.set("context_stocks", ctx.stocks.join(","));
   if (ctx.queries.length) params.set("context_queries", ctx.queries.join("\n"));
   if (ctx.window) params.set("context_window", ctx.window);
+  if (ctx.turns && ctx.turns.length) params.set("context_turns", JSON.stringify(ctx.turns));
   if (Object.keys(state.pendingAnswers).length) {
     params.set("context_answers", JSON.stringify(state.pendingAnswers));
   }
@@ -219,6 +207,16 @@ function run(presetQuery) {
     if (!msg) return;
     const step = msg.steps.find((s) => s.key === data.key);
     if (step) { step.state = data.state; step.detail = data.detail; }
+    paintAssistant(aid);
+  });
+  source.addEventListener("sector_screen", (e) => {
+    const sector = JSON.parse(e.data);
+    const msg = state.messages.find((m) => m.id === aid);
+    if (!msg) return;
+    msg.phase = "sector";
+    msg.sector = sector;
+    $("evidenceBtn").disabled = true;
+    $("traceBtn").disabled = true;
     paintAssistant(aid);
   });
   source.addEventListener("brief", (e) => {
@@ -268,23 +266,38 @@ function run(presetQuery) {
 
 function conversationContext() {
   const priors = [];
+  const turns = [];
   let latestStocks = [];
   let latestWindow = "";
   const maxTurns = state.maxTurns || 20;
   for (const m of state.messages) {
-    if (m.role === "user" && m.text) priors.push(m.text);
+    if (m.role === "user" && m.text) {
+      priors.push(m.text);
+      turns.push({ role: "user", text: m.text, stocks: [] });
+    }
     if (m.role !== "assistant") continue;
     const briefs = m.briefs && m.briefs.length ? m.briefs : (m.brief ? [m.brief] : []);
     const names = briefs.map((b) => b && b.subject && b.subject.stock && b.subject.stock.name).filter(Boolean);
+    const win = briefs[0] && briefs[0].subject && briefs[0].subject.window
+      ? briefs[0].subject.window.window
+      : "";
+    turns.push({
+      role: "assistant",
+      text: "",
+      kind: m.phase || "",
+      stocks: names,
+      window: win || null,
+    });
     if (names.length) {
       latestStocks = names;
-      latestWindow = (briefs[0].subject.window && briefs[0].subject.window.window) || "";
+      latestWindow = win || latestWindow;
     }
   }
   return {
     stocks: [...new Set(latestStocks)],
     queries: priors.slice(0, -1).slice(-maxTurns),
     window: latestWindow,
+    turns: turns.slice(-(maxTurns * 2)),
     answers: { ...state.pendingAnswers },
   };
 }
@@ -312,7 +325,7 @@ function paintThread() {
     box.innerHTML = `
       <div class="greeting">
         <h1>这只股票，发生了什么？</h1>
-        <p>输入公司名称或代码。报告按行情事实、驱动因素、基本面含义展开，结论可回溯到证据，不做买卖建议。</p>
+        <p>输入公司名称、代码，或问某个板块最近有没有明显异动。个股报告按行情事实、驱动因素、基本面含义展开，结论可回溯到证据，不做买卖建议。</p>
       </div>
       <div class="suggest">
         ${EXAMPLES.map((e) =>
@@ -370,6 +383,7 @@ function renderReply(m) {
     </div>`;
   }
   if (m.phase === "error") return renderError(m.error);
+  if (m.phase === "sector") return renderSectorScreen(m.sector);
   if (m.phase === "brief") {
     const briefs = m.briefs && m.briefs.length ? m.briefs : (m.brief ? [m.brief] : []);
     return briefs.map((brief, i) =>
@@ -412,6 +426,53 @@ function renderAsk(ask) {
     ${buttons ? `<div class="follow" style="margin-top:12px">${buttons}</div>` : ""}
     <p class="hint">也可以直接在输入框里补充。</p>
   </div>`;
+}
+
+function renderSectorScreen(sector) {
+  if (!sector) return "";
+  const win = sector.window || {};
+  const industries = (sector.industries || []).join("、");
+  const rows = (sector.movers || []).map((item) => {
+    const stock = item.stock || {};
+    const pct = item.window_pct == null ? "—" : ((item.window_pct * 100).toFixed(2) + "%");
+    const cls = item.window_pct == null ? "" : (item.window_pct > 0 ? "pos" : item.window_pct < 0 ? "neg" : "");
+    const z = item.z_score == null ? "—" : Math.abs(item.z_score).toFixed(1);
+    const tag = item.is_anomaly ? "异动" : "接近";
+    const reason = (item.reasons || [])[0] || "窗口涨跌相对更大";
+    const q = `${stock.name || ""}最近${win.label || "研究窗口"}为什么异动`;
+    return `<tr class="sector-row" data-sector-q="${esc(q)}" data-w="${esc(win.window || "")}">
+      <td><strong>${esc(stock.name || "")}</strong><div class="code">${esc(stock.thscode || "")}</div></td>
+      <td>${esc(item.industry_name || "")}</td>
+      <td class="${cls}">${esc(pct)}</td>
+      <td>${esc(z)}</td>
+      <td><span class="sector-tag ${item.is_anomaly ? "hit" : ""}">${tag}</span> ${esc(reason)}</td>
+    </tr>`;
+  }).join("");
+  const empty = rows ? "" : `<p class="hint">没有可展示的成分股结果。</p>`;
+  return `<article class="brief">
+    <section class="hero">
+      <div class="doc-type">板块异动扫描</div>
+      <div class="hero-top">
+        <div>
+          <h2>${esc(sector.sector_label || "板块")}</h2>
+          <div class="code">${esc(industries)}</div>
+        </div>
+        <div class="hero-meta">
+          <span>${esc(win.label || "")}</span>
+          <span>扫描 ${esc(String(sector.scanned_count || 0))} 只</span>
+        </div>
+      </div>
+      <p class="hero-lead">${esc(sector.note || "")}</p>
+    </section>
+    <section class="block">
+      ${sectionHead("01", "异动名单", "按异动闸门排序，点击一行可继续做个股分析。")}
+      ${rows ? `<div class="sector-table-wrap"><table class="sector-table">
+        <thead><tr><th>公司</th><th>行业</th><th>窗口涨跌</th><th>|z|</th><th>判定</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>` : empty}
+    </section>
+    ${(sector.disclaimers || []).length ? `<p class="hint">${esc(sector.disclaimers[0])}</p>` : ""}
+  </article>`;
 }
 
 function renderError(err) {
@@ -503,24 +564,28 @@ function renderBriefHtml(brief, mid, split) {
 
 function renderReportSections(brief, w, priceDrivers, companyDrivers) {
   const questions = watchableQuestions(brief, companyDrivers);
+  const showMeans = priceDrivers.length > 0;
   const legal = (brief.disclaimers || []).filter((d) =>
     /不构成投资建议|不对未来股价/.test(d)
   ).slice(0, 2);
+  let seq = 2;
+  const next = () => String(seq++).padStart(2, "0");
   return `
     <section class="block">
-      ${sectionHead("02", "相对表现")}
+      ${sectionHead(next(), "相对表现")}
       ${renderRelativeModule(w, brief.why_happened)}
     </section>
     <section class="block">
-      ${sectionHead("03", "驱动因素")}
+      ${sectionHead(next(), "驱动因素")}
       ${renderDriversModule(brief, priceDrivers)}
     </section>
+    ${showMeans ? `
     <section class="block">
-      ${sectionHead("04", "基本面含义")}
+      ${sectionHead(next(), "基本面含义")}
       ${renderMeansModule(brief, companyDrivers)}
-    </section>
+    </section>` : ""}
     <section class="block">
-      ${sectionHead("05", "待观察事项")}
+      ${sectionHead(next(), "待观察事项")}
       ${renderWatchModule(questions, brief.open_questions.gaps)}
     </section>
     <div class="follow">
@@ -537,7 +602,8 @@ function splitSummary(summary, brief) {
   const bodyBits = [];
   if (rest) bodyBits.push(rest.endsWith("。") ? rest : `${rest}。`);
   const overall = brief && brief.what_it_means && brief.what_it_means.overall;
-  if (brief && brief.kind !== "snapshot" && overall && overall.can_summarize
+  const hasPriceDrivers = brief && brief.kind !== "snapshot" && materialPriceDrivers(brief).length;
+  if (hasPriceDrivers && overall && overall.can_summarize
       && overall.display && !/暂无法|快照/.test(overall.display)) {
     bodyBits.push(`基本面含义：${overall.display}。`);
   }
@@ -547,11 +613,17 @@ function splitSummary(summary, brief) {
 function renderPriceModule(w, mid, snapshot) {
   const usable = (w.measures || []).filter((m) => m.value !== null && m.value !== undefined);
   const lead = usable[0];
+  const gate = w.anomaly;
   const insight = lead
     ? `${w.pattern_label}，${lead.label} ${lead.display}。`
     : `${w.pattern_label}。`;
   const body = cleanText(w.pattern_reason);
   const extras = [];
+  if (gate) {
+    extras.push(gate.is_anomaly
+      ? `异动闸门　需要归因 · ${esc(gate.board_label)}`
+      : `异动闸门　未见显著异动 · ${esc(gate.board_label)}`);
+  }
   usable.slice(1).forEach((m) => {
     if (body.includes(m.label) || insight.includes(m.display)) return;
     if (m.note && !isVague(m.note) && !sameMeaning(m.note, body)) {
@@ -576,30 +648,63 @@ function renderRelativeModule(w, why) {
   const insight = relativeInsight(c);
   const raw = stripLeadingFacts(why && why.priority_reason);
   const body = cleanText(raw) || "三层对照只用于判断应从市场、行业还是公司层面解释本次异动，不做贡献拆分。";
-  return `${moduleBlock(insight, body, materialGaps(w.gaps))}
+  const extras = materialGaps(w.gaps);
+  if (c.residual_note) extras.push(esc(c.residual_note));
+  if (c.beta_market && c.beta_market.display && c.beta_market.display !== "数据不可用") {
+    extras.push(`个股对市场 β ${esc(c.beta_market.display)}`);
+  }
+  if (c.beta_industry && c.beta_industry.display && c.beta_industry.display !== "数据不可用") {
+    extras.push(`个股对行业 β ${esc(c.beta_industry.display)}`);
+  }
+  return `${moduleBlock(insight, body, extras)}
     ${compareHtml(c)}`;
 }
 
 function renderDriversModule(brief, drivers) {
-  if (!drivers.length) {
-    return moduleBlock("未发现与本次异动直接相关、且能指向可验证路径的驱动因素。", "", []);
+  if (brief.why_happened && brief.why_happened.priority === "no_anomaly") {
+    return moduleBlock("未见显著异动，未展开归因。", brief.why_happened.priority_reason || "", []);
   }
-  const names = drivers.map((d) => d.name).join("、");
-  const insight = drivers.length === 1
-    ? `${drivers[0].name}是与本次异动相关的主要因素。`
-    : `与本次异动相关的因素有 ${drivers.length} 项：${names}。`;
+  if (!drivers.length) {
+    return moduleBlock(
+      "尚未形成可确认的利好或利空判断。",
+      "第三部分只展示方向已确认的影响因子；事件相关但方向未过证据门槛的内容不在此列出。",
+      []
+    );
+  }
+  const good = drivers.filter((d) => d.polarity === "positive").length;
+  const bad = drivers.filter((d) => d.polarity === "negative").length;
+  const pending = drivers.length - good - bad;
+  const bits = [];
+  if (bad) bits.push(`${bad} 项利空`);
+  if (good) bits.push(`${good} 项利好`);
+  if (pending) bits.push(`${pending} 项方向待确认`);
+  const insight = `先看影响方向：${bits.join("，")}。`;
   const cards = drivers.map(renderDriverCard).join("");
-  return `${moduleBlock(insight, "", [])}${cards}`;
+  return `${moduleBlock(insight, "每条只保留判断、短观点和星级，原文在证据链里。", [])}${cards}`;
 }
 
 function renderDriverCard(d) {
-  const role = d.status === "supported" ? "主要解释" : "部分解释";
-  const insight = `${d.name}：${role}。`;
-  const body = uniqueSentence([d.summary, usefulRelevance(d.relevance)].filter(Boolean).join(""));
+  const polarity = d.polarity || "uncertain";
+  const label = d.polarity_label || "待确认";
+  const title = d.thesis || d.name;
+  const view = d.viewpoint || "";
   const extras = [];
-  compactRefs(d.supporting_refs, false, body).forEach((item) => extras.push(item.html));
-  compactRefs(d.contradicting_refs, true, body).forEach((item) => extras.push(`反向　${item.html}`));
-  return `<div class="driver">${moduleBlock(insight, body, extras)}</div>`;
+  extras.push(`<span class="star-row"><span>影响度</span>${starBar(d.impact_stars)}<em>模拟</em></span>`);
+  extras.push(`<span class="star-row"><span>解释度</span>${starBar(d.explain_stars)}</span>`);
+  compactRefs(d.supporting_refs, false, view).forEach((item) => extras.push(item.html));
+  return `<div class="driver factor-card polarity-${esc(polarity)}">
+    <div class="factor-kicker">
+      <span class="polarity polarity-${esc(polarity)}">${esc(label)}</span>
+      <span class="tag cat">${esc(d.category_label || "")}</span>
+    </div>
+    ${moduleBlock(title, view, extras)}
+  </div>`;
+}
+
+function starBar(n) {
+  const filled = Math.max(0, Math.min(5, Number(n) || 0));
+  const dots = [1, 2, 3, 4, 5].map((i) => `<i class="${i <= filled ? "on" : ""}"></i>`).join("");
+  return `<span class="stars" aria-label="${filled}/5">${dots}</span>`;
 }
 
 function renderMeansModule(brief, drivers) {
@@ -626,6 +731,7 @@ function renderAssessmentCard(d, siblings) {
   if (a.display_strength && !/不足/.test(a.display_strength)) {
     extras.push(`证据强度　${esc(a.display_strength)}`);
   }
+  (a.missing_links || []).forEach((x) => extras.push(`缺环　${esc(x)}`));
   compactRefs(a.exposure_refs, false, body).forEach((item) => extras.push(item.html));
   return `<div class="assessment">${moduleBlock(insight, body, extras)}</div>`;
 }
@@ -636,11 +742,15 @@ function renderWatchModule(questions, gaps) {
   if (!items.length && !extras.length) {
     return moduleBlock("没有足以改变当前判断的待观察事项。", "", []);
   }
-  const insight = items[0] || extras[0];
-  const body = items.length > 1
-    ? `其余 ${items.length - 1} 项会改变对方向或期限的判断，列于下方。`
-    : "";
-  return moduleBlock(insight, body, items.slice(1).map(esc).concat(extras));
+  if (items.length <= 1) {
+    return moduleBlock(items[0] || extras[0], "", extras);
+  }
+  const numbered = items.map((x, i) => `${String(i + 1).padStart(2, "0")}　${esc(x)}`);
+  return moduleBlock(
+    `${items.length} 项待观察，会改变对方向或期限的判断。`,
+    "",
+    numbered.concat(extras)
+  );
 }
 
 function compareHtml(c) {
@@ -673,9 +783,8 @@ function materialCompanyDrivers(brief) {
 
 function isPriceRelevant(d) {
   if (!d || d.status === "insufficient") return false;
-  const by = Object.fromEntries((d.checks || []).map((c) => [c.key, c]));
-  if (by.timing && by.timing.result === "fail") return false;
-  if (by.mechanism && by.mechanism.result === "fail") return false;
+  const passed = (d.checks || []).filter((c) => c.result === "pass").length;
+  if (passed < 3) return false;
   const refs = d.supporting_refs || [];
   if (!refs.length) return false;
   const usable = refs.filter((r) => {
@@ -744,13 +853,15 @@ function compactRefs(refs, counter = false, overlapText = "") {
 }
 
 function chainParagraph(a, driverName) {
-  const steps = (a.chain || []).map((s) => s.text || "").filter((t) => {
-    if (isVague(t)) return false;
+  const steps = (a.chain || []).filter((s) => {
+    const t = s.text || "";
+    if (!t || isVague(t)) return false;
+    if (s.link_status === "missing") return false;
     if (/^事件事实/.test(t) && t.includes(driverName)) return false;
     if (/公司暴露：/.test(t) && /确认|无法确认/.test(t)) return false;
     if (/传导链在此中断/.test(t)) return false;
     return true;
-  });
+  }).map((s) => s.text);
   if (!steps.length) return "";
   return uniqueSentence(steps.map((t) => t.replace(/[。；]$/, "")).join("；") + "。");
 }
@@ -856,6 +967,13 @@ function bindReply(root) {
   });
   root.querySelectorAll("[data-act]").forEach((el) => {
     el.addEventListener("click", () => openDrawer(el.dataset.act));
+  });
+  root.querySelectorAll("[data-sector-q]").forEach((el) => {
+    el.addEventListener("click", () => {
+      setWindow(el.dataset.w || state.window);
+      $("queryInput").value = el.dataset.sectorQ || "";
+      run(el.dataset.sectorQ);
+    });
   });
   root.querySelectorAll("[data-win]").forEach((el) => {
     el.addEventListener("click", () => {

@@ -44,6 +44,7 @@ class DailyProfile(BaseModel):
     turnover_ratio: Optional[float] = None
     turnover_amount: Optional[float] = None
     is_intraday: bool = False
+    limit_state: Optional[str] = None
     gaps: List[DataGap] = Field(default_factory=list)
 
     def caliber(self, key: str) -> str:
@@ -56,6 +57,7 @@ def build_daily_profile(
     bar: Bar,
     history: Optional[List[Bar]] = None,
     baseline_days: int = 20,
+    limit_pct: Optional[float] = None,
 ) -> DailyProfile:
     """计算单个交易日的价格画像。
 
@@ -106,6 +108,11 @@ def build_daily_profile(
     )
     if turnover_gap is not None:
         gaps.append(turnover_gap)
+
+    if limit_pct is not None:
+        from app.engine.ashare import detect_limit_state
+
+        profile.limit_state = detect_limit_state(bar, limit_pct)
 
     profile.gaps = gaps
     return profile

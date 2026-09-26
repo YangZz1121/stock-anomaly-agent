@@ -1,8 +1,8 @@
 """候选驱动因素的组装与状态判定。
 
 状态（支持 / 部分支持 / 证据不足）完全由规则决定，输入是四类验证的结果
-和证据的来源等级。模型不参与这一步——它已经在"提出候选"和"判断机制"
-两处表达过意见，不应该再给自己的结论打分。
+和证据的来源等级。四项里至少三项为「吻合」即视为有效因素（支持）；
+单项失败不再一票否决。模型不参与这一步。
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ from app.contracts import (
 from app.ledger import EvidenceLedger
 from app.schemas import Driver, DriverCheck
 
-# 这三项只要判为"不吻合"，该因素就不能作为本次价格变化的解释
+# 四项验证里至少三项吻合，才识别为有效因素；单项失败不再一票否决。
+_VALID_PASS_THRESHOLD = 3
 _CRITICAL_CHECKS = ("timing", "cross_section", "mechanism")
 
 
@@ -74,22 +75,14 @@ def split_evidence_refs(
         if evidence is None:
             continue
 
-        if timing_result == CheckResult.FAIL:
-            contradicting.append(
-                EvidenceRef(
-                    evidence_id=eid,
-                    support=SupportLevel.WEAKENS,
-                    rationale=(
-                        "该信息的发布时间与本次价格变化在时序上不匹配，"
-                        "反而削弱了「它解释了这次变化」这一说法。"
-                    ),
-                )
-            )
-            continue
-
         if evidence.source_tier == SourceTier.T4_UNVERIFIED:
             support = SupportLevel.NEUTRAL
             rationale = "来源无法确认，仅作检索线索，不计入对结论的支撑。"
+        elif timing_result == CheckResult.FAIL:
+            support = SupportLevel.WEAKLY_SUPPORTS
+            rationale = (
+                "来源可确认，但发布时间与本次价格变化不完全吻合，只能提供弱支持。"
+            )
         elif timing_result == CheckResult.PASS and evidence.source_tier in (
             SourceTier.T1_AUTHORITATIVE,
             SourceTier.T2_PROFESSIONAL,
@@ -136,9 +129,8 @@ def decide_status(
         )
         return DriverStatus.INSUFFICIENT, unresolved
 
-    failed = [
-        by_key[k] for k in _CRITICAL_CHECKS if k in by_key and by_key[k].result == CheckResult.FAIL
-    ]
+    passed = sum(1 for c in checks if c.result == CheckResult.PASS)
+    failed = [c for c in checks if c.result == CheckResult.FAIL]
     for check in failed:
         unresolved.append(f"{check.label}验证未通过：{check.reasoning}")
 
@@ -148,11 +140,11 @@ def decide_status(
         elif check.result == CheckResult.UNKNOWN:
             unresolved.append(f"{check.label}无法判定：{check.reasoning}")
 
+    if passed >= _VALID_PASS_THRESHOLD:
+        return DriverStatus.SUPPORTED, unresolved
+
     if failed:
         return DriverStatus.INSUFFICIENT, unresolved
-
-    if all(c.result == CheckResult.PASS for c in checks):
-        return DriverStatus.SUPPORTED, unresolved
 
     unknown_critical = [
         k for k in _CRITICAL_CHECKS if k in by_key and by_key[k].result == CheckResult.UNKNOWN

@@ -19,6 +19,13 @@ SNAPSHOT_STEPS: List[Dict[str, str]] = [
     {"key": "profile", "label": "整理价格快照"},
 ]
 
+SECTOR_STEPS: List[Dict[str, str]] = [
+    {"key": "resolve", "label": "识别板块与研究窗口"},
+    {"key": "constituents", "label": "拉取行业成分股"},
+    {"key": "scan", "label": "扫描窗口行情"},
+    {"key": "rank", "label": "按异动闸门排序"},
+]
+
 PROGRESS_STEPS: List[Dict[str, str]] = [
     {"key": "resolve", "label": "识别标的、行业与研究窗口"},
     {"key": "quote", "label": "获取个股行情"},

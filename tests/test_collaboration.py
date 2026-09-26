@@ -39,7 +39,7 @@ def test_clip_conversation_keeps_last_twenty_user_turns():
     user_turns = [t for t in clipped.turns if t.role == "user"]
     assert len(user_turns) == 20
     assert user_turns[0].text == "问5 宁德时代"
-    assert clipped.stocks == ["贵州茅台"]
+    assert clipped.stocks == ["宁德时代"]
 
 
 def test_clip_conversation_fills_stock_from_recent_turn():

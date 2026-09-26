@@ -105,6 +105,7 @@ def test_mock_overlay_rewrites_demo_industries_to_fixture_codes():
     assert by_name["白酒"] == "886042.TI"
     assert by_name["乳制品"] == "886055.TI"
     assert by_name["汽车整车"] == "886060.TI"
+    assert by_name["半导体"] == "886070.TI"
 
 
 def test_seed_resolves_without_any_market_or_llm_call(tmp_path):

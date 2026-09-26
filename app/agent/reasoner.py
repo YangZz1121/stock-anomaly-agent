@@ -52,6 +52,9 @@ class MechanismVerdict(BaseModel):
 class ChainStep(BaseModel):
     text: str
     is_conditional: bool = False
+    link: str = ""
+    evidence_ids: List[str] = Field(default_factory=list)
+    status: str = "present"
 
 
 class TransmissionDraft(BaseModel):
@@ -260,7 +263,9 @@ class HeuristicReasoner:
         offsetting = _scan(clusters, _OFFSET_MARKERS)
         amplifying = _scan(clusters, _AMPLIFY_MARKERS)
 
-        chain = _build_chain(proposal, exposure_level, direction)
+        chain = _build_chain(
+            proposal, cluster, exposure_level, exposure_ids, direction, horizon
+        )
 
         unknowns: List[str] = []
         if exposure_level == ExposureLevel.UNCONFIRMED:
@@ -405,33 +410,55 @@ def _scan(clusters: Sequence[ClusterInfo], markers: Dict[str, str]) -> List[str]
 
 
 def _build_chain(
-    proposal: DriverProposal, exposure: ExposureLevel, direction: ImpactDirection
+    proposal: DriverProposal,
+    cluster: ClusterInfo,
+    exposure: ExposureLevel,
+    exposure_ids: List[str],
+    direction: ImpactDirection,
+    horizon: ImpactHorizon,
 ) -> List[ChainStep]:
-    steps = [ChainStep(text=f"事件事实：{proposal.name}")]
+    steps = [
+        ChainStep(
+            text=f"事件事实：{proposal.name}",
+            link="event",
+            evidence_ids=list(cluster.evidence_ids),
+            status="present",
+        )
+    ]
     if exposure == ExposureLevel.UNCONFIRMED:
         steps.append(
-            ChainStep(text="公司暴露：现有证据无法确认公司在该因素上的业务暴露")
+            ChainStep(
+                text="公司暴露：现有证据无法确认公司在该因素上的业务暴露",
+                link="exposure",
+                status="missing",
+            )
         )
         steps.append(
             ChainStep(
                 text="由于公司暴露未确认，传导链在此中断，不继续推导基本面结果",
                 is_conditional=True,
+                link="mechanism",
+                status="missing",
             )
         )
         return steps
 
-    steps.append(ChainStep(text="公司暴露：已由正式披露确认存在相关业务暴露"))
+    steps.append(
+        ChainStep(
+            text="公司暴露：已由正式披露确认存在相关业务暴露",
+            link="exposure",
+            evidence_ids=list(exposure_ids),
+            status="present",
+        )
+    )
     if direction == ImpactDirection.NEGATIVE:
         steps.append(
             ChainStep(
                 text="若该因素持续，相关业务的经营条件面临压力",
                 is_conditional=True,
-            )
-        )
-        steps.append(
-            ChainStep(
-                text="若无法通过提价、结构调整或其他安排完全对冲，盈利空间承压",
-                is_conditional=True,
+                link="mechanism",
+                evidence_ids=list(cluster.evidence_ids),
+                status="present",
             )
         )
     elif direction == ImpactDirection.POSITIVE:
@@ -439,16 +466,83 @@ def _build_chain(
             ChainStep(
                 text="若该因素兑现，相关业务的经营条件有望改善",
                 is_conditional=True,
+                link="mechanism",
+                evidence_ids=list(cluster.evidence_ids),
+                status="present",
             )
         )
-    else:
+    elif direction == ImpactDirection.MIXED:
         steps.append(
             ChainStep(
                 text="正负两条传导路径同时存在，当前无法判断净影响方向",
                 is_conditional=True,
+                link="mechanism",
+                evidence_ids=list(cluster.evidence_ids),
+                status="present",
             )
         )
+        steps.append(
+            ChainStep(
+                text="影响方向：现有证据不足以判断净影响",
+                link="direction",
+                status="missing",
+            )
+        )
+        return steps
+    else:
+        steps.append(
+            ChainStep(
+                text="影响方向：事件描述中没有足以判断基本面方向的明确表述",
+                link="direction",
+                status="missing",
+            )
+        )
+        return steps
+
+    steps.append(
+        ChainStep(
+            text=f"影响方向：{_direction_phrase(direction)}",
+            link="direction",
+            evidence_ids=list(cluster.evidence_ids),
+            status="present",
+        )
+    )
+    if horizon == ImpactHorizon.UNCERTAIN:
+        steps.append(
+            ChainStep(
+                text="影响期限：缺少终止条件或恢复机制，无法判断",
+                link="horizon",
+                status="missing",
+            )
+        )
+        return steps
+    steps.append(
+        ChainStep(
+            text=f"影响期限：{_horizon_phrase(horizon)}",
+            link="horizon",
+            evidence_ids=list(cluster.evidence_ids),
+            status="present",
+        )
+    )
     return steps
+
+
+def _direction_phrase(direction: ImpactDirection) -> str:
+    return {
+        ImpactDirection.POSITIVE: "经营条件偏向改善",
+        ImpactDirection.NEGATIVE: "经营条件偏向承压",
+        ImpactDirection.MIXED: "正负影响并存",
+        ImpactDirection.UNCERTAIN: "尚无法判断",
+    }[direction]
+
+
+def _horizon_phrase(horizon: ImpactHorizon) -> str:
+    return {
+        ImpactHorizon.ONE_OFF: "更可能是一次性或短期冲击",
+        ImpactHorizon.PHASED: "存在时间边界，更可能是阶段性影响",
+        ImpactHorizon.STRUCTURAL: "可能改变长期经营结构",
+        ImpactHorizon.UNCERTAIN: "尚无法判断",
+    }[horizon]
 
 
 _MIN_EXPOSURE_OVERLAP = 2

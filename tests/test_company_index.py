@@ -17,6 +17,11 @@ def test_exact_alias_and_official_name_match():
     assert bind_companies(["宁王", "伊利"]) == ["宁德时代", "伊利股份"]
 
 
+def test_sector_token_does_not_bind_interior_legal_name():
+    assert match_company("科技股") is None
+    assert bind_companies(["科技股", "有明显"]) == []
+
+
 def test_similarity_threshold_rejects_unknown_name():
     assert similarity("不存在的公司", "宁德时代") < 0.8
     assert match_company("不存在的公司") is None
@@ -48,6 +53,20 @@ def test_extract_uses_model_then_binds():
     assert "宁王" in mentions
     keys = asyncio.run(resolve_company_keys("看看宁王怎么了", FakeLLM()))
     assert keys == ["宁德时代"]
+
+
+def test_screen_query_does_not_keep_invented_company():
+    class FakeLLM:
+        name = "fake"
+        model = "unit"
+
+        async def complete_json(self, purpose, system, user, schema_hint=None):
+            return Fetched.success({"companies": ["隆基绿能"]}, "llm:fake", "fake")
+
+    keys = asyncio.run(
+        resolve_company_keys("科技股最近有明显异动的股票么", FakeLLM())
+    )
+    assert keys == []
 
 
 def test_extract_model_empty_does_not_invent_from_leftover():

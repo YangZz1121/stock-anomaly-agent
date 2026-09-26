@@ -59,6 +59,7 @@ class AgentMemory:
         self.ask: Optional[Dict[str, Any]] = None
         self.answers: Dict[str, str] = {}
         self.done = False
+        self.pending_patch: Any = None
         self._flags: Set[str] = set()
 
     def answered(self, field: str) -> bool:
@@ -119,6 +120,8 @@ class AgentMemory:
             "driver_count": len(self.drivers),
             "proposed": self.has("proposed"),
             "assessed": self.has("assessed"),
+            "patched": self.has("patched"),
+            "chain_gaps": _chain_gaps(self),
             "counter_done": self.has("counter"),
             "transmitted": self.has("transmitted"),
             "gap_fields": [g.field for g in self.gaps],
@@ -128,3 +131,9 @@ class AgentMemory:
                 and getattr(self.subject.industry, "is_weak_evidence", False)
             ),
         }
+
+
+def _chain_gaps(memory: "AgentMemory") -> List[str]:
+    from app.engine.chain_logic import describe_gaps
+
+    return describe_gaps(memory)

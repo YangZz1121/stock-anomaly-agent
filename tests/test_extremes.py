@@ -35,7 +35,11 @@ def test_after_close_news_cannot_explain_the_same_day_move():
     )
     timing = next(c for c in late.checks if c.key == "timing")
     assert "收盘之后" in timing.reasoning
-    assert late.assessment is None, "时间检验不通过的因素不应进入影响评估"
+    passed = sum(1 for c in late.checks if c.result == CheckResult.PASS)
+    if passed >= 3:
+        assert late.status.value == "supported"
+    else:
+        assert late.assessment is None, "未满三项吻合时，时间检验失败的因素不进入影响评估"
 
 
 def test_query_with_only_a_code_still_resolves():

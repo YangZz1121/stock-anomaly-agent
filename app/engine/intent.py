@@ -9,8 +9,14 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.contracts import ResearchWindow
-from app.engine.company_index import bind_companies, scan_query_for_companies
+from app.engine.company_index import (
+    bind_companies,
+    is_screen_query,
+    scan_query_for_companies,
+)
 from app.engine.resolver import ParsedQuery, parse_query
+from app.engine.sector import SectorMatch, resolve_sector_phrase
+from app.engine.topic import apply_topic_policy, latest_topic_companies
 
 _FULL_REPORT = re.compile(
     r"(完整.{0,12}报告|分析报告|研究报告|撰写报告|写一份.{0,16}报告|完整的?异动|完整分析)"
@@ -52,16 +58,26 @@ _GREETINGS = {
 NONSENSE_MESSAGE = "您的问题「{query}」没有可识别的研究意图。请输入 A 股公司名称或代码，例如「宁德时代今天为什么跌了」。"
 NEED_STOCK_MESSAGE = "您的问题「{query}」缺少股票或公司名称。"
 NEED_STOCK_HINT = "请补充 A 股公司名称或 6 位代码，例如「宁德时代」。"
+NEED_SECTOR_MESSAGE = (
+    "您的问题「{query}」是在问板块异动，但没有识别出具体板块。"
+    "请说明板块或行业，例如「科技股」「白酒」「半导体」。"
+)
+NEED_SECTOR_HINT = "也可以直接点名公司，例如「宁德时代最近5个交易日」。"
 NEED_WINDOW_HINT_SNAPSHOT = (
     "请先确认研究窗口：今日 / 最近 3 个交易日 / 最近 5 个交易日。确认后先为您做行情快照。"
 )
 NEED_WINDOW_HINT_REPORT = (
     "请先确认研究窗口：今日 / 最近 3 个交易日 / 最近 5 个交易日。确认后开始分析。"
 )
+NEED_WINDOW_HINT_SECTOR = (
+    "请先确认研究窗口：今日 / 最近 3 个交易日 / 最近 5 个交易日。"
+    "确认后扫描该板块成分股的异动。"
+)
 MODEL_REPLY = "基于您的提问，我会挑选最合适的模型完成任务"
 CAPABILITY_REPLY = (
-    "我是个股异动研究助手。你可以用公司名称或代码提问，我会先确认研究窗口，"
-    "再给出行情快照或完整的异动分析：发生了什么、为什么、对公司意味着什么。"
+    "我是个股异动研究助手。你可以用公司名称或代码提问，也可以问某个板块"
+    "最近有没有明显异动，例如「科技股最近有明显异动的股票么」。"
+    "我会先确认研究窗口，再给出行情快照、板块扫描或完整异动分析。"
     "不做买卖建议，也不对股价做确定性预测。"
 )
 CHITCHAT_HINT = "可以直接问一只股票，例如「宁德时代今天为什么跌了」。"
@@ -74,6 +90,7 @@ class IntentKind(str, Enum):
     NEED_WINDOW = "need_window"
     SNAPSHOT = "snapshot"
     REPORT = "report"
+    SECTOR_SCREEN = "sector_screen"
 
 
 class ConversationTurn(BaseModel):
@@ -108,12 +125,9 @@ def clip_conversation(
     user_idx = [i for i, item in enumerate(turns) if item.role == "user"]
     if len(user_idx) > max_turns:
         turns = turns[user_idx[-max_turns] :]
-    stocks = list(context.stocks or [])
-    if not stocks:
-        for turn in reversed(turns):
-            if turn.stocks:
-                stocks = list(turn.stocks)
-                break
+    stocks = latest_topic_companies(
+        context.model_copy(update={"queries": queries, "turns": turns})
+    )
     window = context.window
     if window is None:
         for turn in reversed(turns):
@@ -133,6 +147,8 @@ class ChatIntent(BaseModel):
     chitchat_topic: Optional[str] = None
     message: str = ""
     hint: str = ""
+    sector_label: Optional[str] = None
+    sector_names: List[str] = Field(default_factory=list)
 
 
 def classify_intent(
@@ -152,29 +168,40 @@ def classify_intent(
             message=MODEL_REPLY if topic == "model" else "",
             hint=CHITCHAT_HINT,
         )
+    explicit = [
+        key
+        for key in scan_query_for_companies(raw)
+        if key.strip().lower() not in _GREETINGS
+    ]
+    screen = is_screen_query(raw)
+    local = bind_companies(
+        [
+            key
+            for key in list(parsed.search_keys) + explicit
+            if key.strip().lower() not in _GREETINGS
+        ]
+    )
+    if screen and not explicit:
+        local = []
     if resolved_keys is not None:
-        keys = [key for key in resolved_keys if key and key.strip().lower() not in _GREETINGS]
+        keys = [
+            key
+            for key in resolved_keys
+            if key and key.strip().lower() not in _GREETINGS
+        ]
+        inherited = bool(keys) and not local
+        if screen and not explicit:
+            keys, inherited = [], False
     else:
-        keys = bind_companies(
-            [
-                key
-                for key in list(parsed.search_keys) + scan_query_for_companies(raw)
-                if key.strip().lower() not in _GREETINGS
-            ]
-        )
-    inherited = False
-    if not keys:
-        fallback = bind_companies(_context_keys(context))
-        if fallback and _can_inherit(raw):
-            parsed = parsed.model_copy(
-                update={"name_hints": fallback, "name_hint": fallback[0]}
-            )
-            keys = fallback
-            inherited = True
-    elif keys:
-        parsed = parsed.model_copy(
-            update={"name_hints": keys, "name_hint": keys[0] if keys else None}
-        )
+        if screen and not explicit:
+            keys, inherited = [], False
+        else:
+            keys, inherited = apply_topic_policy(local, raw, context)
+            if inherited and not local and not _can_inherit(raw):
+                keys, inherited = [], False
+    parsed = parsed.model_copy(
+        update={"name_hints": keys, "name_hint": keys[0] if keys else None}
+    )
     if parsed.window is None and context and context.window:
         parsed = parsed.model_copy(update={"window": context.window})
     has_entity = bool(keys)
@@ -183,6 +210,17 @@ def classify_intent(
     wants_analysis = wants_full or bool(raw and _ANALYSIS.search(raw))
 
     if not has_entity:
+        sector = resolve_sector_phrase(raw)
+        if sector is not None:
+            return _sector_intent(parsed, sector, chosen, wants_full, inherited=False)
+        if screen:
+            return ChatIntent(
+                kind=IntentKind.NEED_STOCK,
+                parsed=parsed,
+                wants_full_report=wants_full,
+                message=NEED_SECTOR_MESSAGE.format(query=raw or query),
+                hint=NEED_SECTOR_HINT,
+            )
         if wants_analysis or not is_nonsense_text(raw):
             return ChatIntent(
                 kind=IntentKind.NEED_STOCK,
@@ -233,6 +271,34 @@ def _chitchat_topic(raw: str) -> Optional[str]:
     return None
 
 
+def _sector_intent(
+    parsed: ParsedQuery,
+    sector: SectorMatch,
+    window: Optional[ResearchWindow],
+    wants_full: bool,
+    inherited: bool,
+) -> ChatIntent:
+    if window is None:
+        return ChatIntent(
+            kind=IntentKind.NEED_WINDOW,
+            parsed=parsed,
+            wants_full_report=wants_full,
+            inherited_from_context=inherited,
+            message=f"识别到板块「{sector.label}」，但没有指定研究窗口。",
+            hint=NEED_WINDOW_HINT_SECTOR,
+            sector_label=sector.label,
+            sector_names=sector.names,
+        )
+    return ChatIntent(
+        kind=IntentKind.SECTOR_SCREEN,
+        parsed=parsed,
+        wants_full_report=wants_full,
+        inherited_from_context=inherited,
+        sector_label=sector.label,
+        sector_names=sector.names,
+    )
+
+
 def _can_inherit(raw: str) -> bool:
     if not raw or is_nonsense_text(raw) or _chitchat_topic(raw):
         return False
@@ -240,24 +306,7 @@ def _can_inherit(raw: str) -> bool:
 
 
 def _context_keys(context: Optional[ConversationContext]) -> List[str]:
-    if context is None:
-        return []
-    stocks = [
-        key.strip()
-        for key in context.stocks
-        if key and key.strip() and key.strip().lower() not in _GREETINGS
-    ]
-    if stocks:
-        return _dedupe(stocks)
-    for text in reversed(context.queries):
-        keys = [
-            key
-            for key in parse_query(text).search_keys
-            if key.strip().lower() not in _GREETINGS
-        ]
-        if keys:
-            return keys
-    return []
+    return latest_topic_companies(context)
 
 
 def _dedupe(items: List[str]) -> List[str]:

@@ -5,15 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
-from app.engine.company_index import bind_companies, scan_query_for_companies
+from app.engine.company_index import (
+    bind_companies,
+    is_screen_query,
+    scan_query_for_companies,
+)
 from app.engine.resolver import parse_query
+from app.engine.topic import apply_topic_policy
 from app.trace import RunRecorder
 
 EXTRACT_SYSTEM = (
-    "你从用户提问中抽取 A 股或港股上市公司的名称、简称或代码。"
-    "只抽取明确出现的主体，不要脑补，不要解释。"
+    "你从用户最新一句提问中抽取 A 股或港股上市公司的名称、简称或代码。"
+    "只抽取这一句里明确出现的主体，不要把更早对话里的公司再塞进来，不要脑补，不要解释。"
     "优先抽取简称或常用名，例如「宁德时代」而不是全称。"
-    "如果没有公司，返回空数组。"
+    "一句里可以有多家，全部返回；如果没有公司，返回空数组。"
 )
 EXTRACT_SCHEMA = {"companies": ["公司名称或简称"]}
 
@@ -120,23 +125,28 @@ async def resolve_company_keys(
     llm=None,
     recorder: Optional[RunRecorder] = None,
     threshold: Optional[float] = None,
+    context=None,
 ) -> List[str]:
     extracted = await extract_companies(query, llm, recorder)
     bound = bind_companies(extracted.mentions, threshold=threshold)
-    if bound:
-        return bound
-    extras: List[str] = []
-    seen = set()
-    for item in extracted.model_mentions:
-        key = (item or "").strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        extras.append(key)
-    for item in parse_query(query).codes:
-        key = (item or "").strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        extras.append(key)
-    return extras
+    current = list(bound)
+    if not current:
+        extras: List[str] = []
+        seen = set()
+        for item in extracted.model_mentions:
+            key = (item or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            extras.append(key)
+        for item in parse_query(query).codes:
+            key = (item or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            extras.append(key)
+        current = extras
+    if is_screen_query(query) and not scan_query_for_companies(query):
+        return []
+    keys, _ = apply_topic_policy(current, query, context)
+    return keys

@@ -38,6 +38,7 @@ from app.contracts import (
     ImpactHorizon,
 )
 from app.engine import presenter
+from app.engine.chain_logic import ground_chain
 from app.ledger import EvidenceLedger
 from app.trace import RunRecorder
 
@@ -178,6 +179,9 @@ class LLMReasoner:
             ChainStep(
                 text=str(step.get("text", "")).strip(),
                 is_conditional=bool(step.get("is_conditional")),
+                link=str(step.get("link") or "").strip(),
+                evidence_ids=_valid_ids(step.get("evidence_ids"), ledger),
+                status=str(step.get("status") or "present").strip() or "present",
             )
             for step in (payload.get("chain") or [])
             if str(step.get("text", "")).strip()
@@ -193,6 +197,8 @@ class LLMReasoner:
                 f"{exposure.value}，但未提供有效证据编号，已降级为无法确认"
             )
             exposure = ExposureLevel.UNCONFIRMED
+
+        chain = ground_chain(chain, exposure, ledger)
 
         return TransmissionDraft(
             exposure_level=exposure,
@@ -338,8 +344,9 @@ def _transmission_prompt(
 {chr(10).join(evidence_lines)}
 
 请构建该驱动因素的基本面传导链，并判断影响方向与影响期限。
-只能引用上面列出的证据编号。如果公司暴露无法确认，请返回 unconfirmed 并让
-传导链在该处中断，不要继续推导基本面结果。"""
+只能引用上面列出的证据编号。五环必须按 event → exposure → mechanism →
+direction → horizon 写全或在缺环处停止。如果公司暴露无法确认，请返回
+unconfirmed，并把该环标为 missing，不要继续推导后面的基本面结果。"""
 
 
 # --------------------------------------------------------------------------

@@ -62,8 +62,12 @@ TRANSMISSION_SYSTEM = (
     + """
 本轮任务：为一个已经通过验证的驱动因素构建基本面传导链，并判断影响方向与影响期限。
 
-传导链按以下顺序展开，每一步都要能落到给定证据上：
-事件事实 → 公司暴露 → 经营传导机制 → 潜在基本面结果 → 抵消/放大因素 → 关键未知
+传导链必须按五环顺序展开，每一步都要能落到给定证据上：
+事件事实 → 公司暴露 → 作用机制 → 影响方向 → 影响期限
+
+每一环必须标注 link（event / exposure / mechanism / direction / horizon）和
+status（present / missing）。present 时必须给出有效证据编号。
+某一环 missing 时必须停止，不要再用“若该因素持续则…”补全后面的环。
 
 公司暴露等级（exposure_level）只能取：
 - p1_filing：年报、公告、招股说明书或交易所正式披露
@@ -102,6 +106,9 @@ PLANNER_SYSTEM = (
 硬约束：
 - 标的和行情还没就绪时，必须先走 resolve_subject / fetch_snapshot。
 - 证据不足或某个范围检索失败时，优先 search_evidence 做一次补检。
+- 候选已验证但证据链缺环（尤其是公司暴露）时，优先 search_evidence 做定向补证；
+  extra_terms 只能用缺口词或已有证据里出现过的词。宏观 / 市场因素不要用年报
+  去“确认公司暴露”。
 - 已经提出候选之后，必须主动 search_counter_evidence，不能跳过反向证据。
 - 行业是弱证据、检索词不够、或关键未知只有用户能补时，调用 ask_user，不要猜。
 - 同一个 field 用户已经回答过，就不要再问。
@@ -145,7 +152,15 @@ TRANSMISSION_SCHEMA = {
     "exposure_level": "p1_filing | p2_company | p3_media | p4_inference | unconfirmed",
     "exposure_basis": "确认或无法确认公司暴露的理由",
     "exposure_evidence_ids": ["E1"],
-    "chain": [{"text": "传导链的一步", "is_conditional": True}],
+    "chain": [
+        {
+            "link": "event | exposure | mechanism | direction | horizon",
+            "text": "该环节的一句话，必须能落到证据",
+            "is_conditional": True,
+            "evidence_ids": ["E1"],
+            "status": "present | missing",
+        }
+    ],
     "offsetting_factors": ["抵消因素"],
     "amplifying_factors": ["放大因素"],
     "key_unknowns": ["关键未知"],

@@ -52,6 +52,7 @@ class MarketContext(BaseModel):
     has_minute_data: bool = False
     divergence_threshold: float = 0.02
     industry_move_threshold: float = 0.02
+    market_move_threshold: float = 0.01
     industry_name: Optional[str] = None
     stock_name: str = ""
 
@@ -162,20 +163,25 @@ def check_cross_section(
                 "缺少行业或个股区间涨跌数据，无法验证行业与同行是否出现类似表现。",
             )
         same_dir = _same_sign(ctx.industry_pct, ctx.stock_pct)
-        industry_moved = abs(ctx.industry_pct) >= ctx.industry_move_threshold
+        relative = (
+            ctx.industry_vs_market
+            if ctx.industry_vs_market is not None
+            else ctx.industry_pct
+        )
+        industry_moved = abs(relative) >= ctx.industry_move_threshold
         if same_dir and industry_moved:
             return _check(
                 "cross_section",
                 CheckResult.PASS,
-                facts + "行业指数与个股同向变动且行业自身幅度明显，"
+                facts + "行业与个股同向，且行业相对市场的残差达到门槛，"
                 "行业层面的解释在横截面上成立。",
             )
         if same_dir:
             return _check(
                 "cross_section",
                 CheckResult.PARTIAL,
-                facts + "行业与个股方向一致，但行业整体变动幅度有限，"
-                "行业因素的解释力有限。",
+                facts + "行业与个股方向一致，但行业相对市场的额外变化有限，"
+                "行业因素的解释力有限（行业可能只是跟随大盘）。",
             )
         return _check(
             "cross_section",
@@ -190,16 +196,24 @@ def check_cross_section(
                 CheckResult.UNKNOWN,
                 "缺少市场或个股区间涨跌数据，无法验证市场层面的同步性。",
             )
-        if _same_sign(ctx.market_pct, ctx.stock_pct) and abs(ctx.market_pct) > 0:
+        if not _same_sign(ctx.market_pct, ctx.stock_pct):
+            return _check(
+                "cross_section",
+                CheckResult.FAIL,
+                facts + "市场整体表现与个股不同向，市场原因难以解释本次变化。",
+            )
+        if abs(ctx.market_pct) >= ctx.market_move_threshold:
             return _check(
                 "cross_section",
                 CheckResult.PASS,
-                facts + "市场宽基指数与个股同向变动，市场层面的解释在横截面上成立。",
+                facts + "市场宽基指数与个股同向，且市场自身幅度达到门槛，"
+                "市场层面的解释在横截面上成立。",
             )
         return _check(
             "cross_section",
-            CheckResult.FAIL,
-            facts + "市场整体表现与个股不同向，市场原因难以解释本次变化。",
+            CheckResult.PARTIAL,
+            facts + "市场与个股同向，但市场自身变动未达到门槛，"
+            "市场因素只能提供弱解释。",
         )
 
     if category == DriverCategory.COMPANY:

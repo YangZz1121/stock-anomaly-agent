@@ -8,27 +8,11 @@
 </head>
 <body>
 <div class="app">
-
-  <aside class="sidebar" id="sidebar">
-    <div class="brand">
-      <div class="brand-mark">研</div>
-      <div>
-        <div class="brand-name">异动研究</div>
-        <div class="brand-sub">行情事实 · 驱动因素 · 基本面含义</div>
-      </div>
-    </div>
-    <button class="new-chat" id="newChatBtn" type="button">新的提问</button>
-    <div class="side-label">可以这样问</div>
-    <div class="side-examples" id="sideExamples"></div>
-    <div class="side-spacer"></div>
-    <div class="side-status" id="sideStatus"></div>
-  </aside>
-
   <div class="stage">
     <header class="stage-bar">
-      <button class="icon-btn" id="sidebarToggle" type="button" aria-label="打开菜单">☰</button>
       <div class="stage-title">个股异动研究</div>
       <div class="stage-actions">
+        <button class="ghost" id="newChatBtn" type="button">新建对话</button>
         <button class="ghost" id="evidenceBtn" type="button" disabled>证据链</button>
         <button class="ghost" id="traceBtn" type="button" disabled>研究过程</button>
       </div>
@@ -46,7 +30,7 @@
         </div>
         <div class="composer-row">
           <textarea id="queryInput" rows="1" autocomplete="off"
-            placeholder="问一只股票最近为什么涨或跌，例如：宁德时代最近几天怎么一直跌？"></textarea>
+            placeholder="问一只股票或一个板块，例如：科技股最近有明显异动的股票么"></textarea>
           <button id="runBtn" class="send" type="button" aria-label="发送">↑</button>
         </div>
       </div>

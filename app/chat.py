@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.contracts import ResearchWindow
+from app.engine.company_index import is_screen_query
 from app.engine.entity import resolve_company_keys
 from app.engine.intent import (
     CAPABILITY_REPLY,
@@ -21,12 +22,13 @@ from app.engine.intent import (
 )
 from app.errors import NeedsUserInput, NeedsWindowChoice, ResearchError
 from app.orchestrator import ResearchRequest, run_research, run_snapshot
+from app.pipeline.sector_screen import run_sector_screen
 from app.providers.registry import ProviderBundle
-from app.schemas import ResearchBrief
+from app.schemas import ResearchBrief, SectorScreenResult
 from app.trace import RunRecorder
 
 CHITCHAT_SYSTEM = """你是个股异动研究助手，用简体中文回答用户的闲聊。
-可以介绍你能做什么：先确认股票名称或代码、再确认研究窗口，然后给出行情快照或完整异动分析（发生了什么、为什么、对公司意味着什么）。
+可以介绍你能做什么：先确认股票名称、代码或板块，再确认研究窗口，然后给出行情快照、板块异动扫描或完整异动分析。
 禁止买卖建议、目标价、确定性股价预测，也不要编造具体行情或新闻。
 不要透露具体模型名称、厂商或版本。如果被问到模型，只回答：基于您的提问，我会挑选最合适的模型完成任务。
 回复控制在 120 字以内，语气简洁。"""
@@ -40,6 +42,7 @@ class ChatResult(BaseModel):
     reply: Optional[str] = None
     hint: str = ""
     ask: Optional[Dict[str, Any]] = None
+    sector: Optional[SectorScreenResult] = None
 
 
 async def gate_intent(
@@ -55,10 +58,18 @@ async def gate_intent(
         return peek
     if peek.kind == IntentKind.NONSENSE and is_nonsense_text(query):
         raise ResearchError("nonsense", peek.message, peek.hint)
+    if peek.kind == IntentKind.SECTOR_SCREEN:
+        return peek
+    if peek.kind == IntentKind.NEED_WINDOW and peek.sector_label:
+        raise NeedsWindowChoice("need_window", peek.message, peek.hint)
+    if peek.kind == IntentKind.NEED_STOCK and is_screen_query(query):
+        raise ResearchError("need_stock", peek.message, peek.hint)
 
     keys = resolved_keys
     if keys is None and peek.kind != IntentKind.CHITCHAT:
-        keys = await resolve_company_keys(query, llm=llm, recorder=recorder)
+        keys = await resolve_company_keys(
+            query, llm=llm, recorder=recorder, context=context
+        )
     intent = classify_intent(query, window, context=context, resolved_keys=keys)
     if intent.kind == IntentKind.NONSENSE:
         raise ResearchError("nonsense", intent.message, intent.hint)
@@ -117,6 +128,19 @@ async def run_chat(
             reply=text,
             hint=intent.hint or CHITCHAT_HINT,
         )
+    if intent.kind == IntentKind.SECTOR_SCREEN:
+        result = await run_sector_screen(
+            query,
+            window or intent.parsed.window,
+            providers,
+            settings,
+            recorder,
+            sector_label=intent.sector_label,
+            sector_names=intent.sector_names,
+        )
+        return ChatResult(kind=intent.kind.value, sector=result)
+    if intent.kind == IntentKind.NEED_WINDOW:
+        raise NeedsWindowChoice("need_window", intent.message, intent.hint)
     keys = intent.parsed.search_keys
     briefs: List[ResearchBrief] = []
     tasks: List[Dict[str, str]] = []

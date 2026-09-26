@@ -9,8 +9,11 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.contracts import DataGap, ResearchWindow
+from app.engine.anomaly import AnomalyGate, evaluate_anomaly
+from app.engine.ashare import classify_board
 from app.engine.patterns import WindowProfile, build_window_profile
 from app.engine.price_profile import DailyProfile, build_daily_profile
+from app.engine.residual import ResidualBreakdown, estimate_residuals
 from app.errors import ResearchError
 from app.pipeline.subject import ResolvedSubject
 from app.providers.base import Bar
@@ -30,6 +33,8 @@ class MarketSnapshot(BaseModel):
     industry_cum: Optional[float] = None
     industry_selected: List[Bar] = Field(default_factory=list)
     clue_reasons: List[Any] = Field(default_factory=list)
+    residual: Optional[ResidualBreakdown] = None
+    anomaly: Optional[AnomalyGate] = None
     gaps: List[DataGap] = Field(default_factory=list)
 
 
@@ -86,7 +91,7 @@ async def fetch_snapshot(
 
     fetched = await asyncio.gather(*jobs)
     stock_bars, stock_gap = fetched[0]
-    market_cum, market_gap, market_selected = fetched[1]
+    market_cum, market_gap, market_selected, market_lookback = fetched[1]
     clue_reasons = fetched[2]
 
     if stock_gap:
@@ -106,8 +111,9 @@ async def fetch_snapshot(
         window_bars[-1].is_intraday = True
     recorder.step("quote", "done", f"取得 {len(stock_bars)} 根日 K")
 
+    board = classify_board(stock.thscode, stock.name)
     stock_cum, daily_profile, window_profile = _build_price_profiles(
-        window_bars, history_bars, window, settings
+        window_bars, history_bars, window, settings, limit_pct=board.limit_pct
     )
     gaps.extend(window_profile.gaps if window_profile else [])
     gaps.extend(daily_profile.gaps if daily_profile else [])
@@ -118,8 +124,9 @@ async def fetch_snapshot(
 
     industry_cum: Optional[float] = None
     industry_selected: List[Bar] = []
+    industry_lookback: List[Bar] = []
     if industry.index_code:
-        industry_cum, industry_gap, industry_selected = fetched[3]
+        industry_cum, industry_gap, industry_selected, industry_lookback = fetched[3]
         if industry_gap:
             gaps.append(industry_gap)
     else:
@@ -136,6 +143,58 @@ async def fetch_snapshot(
         industry.note or industry.method_label,
     )
 
+    residual = estimate_residuals(
+        stock_history=history_bars,
+        market_history=market_lookback,
+        industry_history=industry_lookback,
+        stock_cum=stock_cum,
+        market_cum=market_cum,
+        industry_cum=industry_cum,
+        min_obs=settings.beta_min_obs,
+    )
+    industry_vs_market = (
+        residual.industry_vs_market
+        if residual.industry_vs_market is not None
+        else (
+            industry_cum - market_cum
+            if industry_cum is not None and market_cum is not None
+            else None
+        )
+    )
+    stock_vs_industry = (
+        residual.stock_vs_industry
+        if residual.stock_vs_industry is not None
+        else (
+            stock_cum - industry_cum
+            if stock_cum is not None and industry_cum is not None
+            else None
+        )
+    )
+    last_turnover = None
+    if daily_profile is not None:
+        last_turnover = daily_profile.turnover_ratio
+    elif window_bars:
+        last_turnover = build_daily_profile(
+            window_bars[-1], history_bars, settings.turnover_baseline_days
+        ).turnover_ratio
+    anomaly = evaluate_anomaly(
+        thscode=stock.thscode,
+        name=stock.name,
+        window_bars=window_bars,
+        history_bars=history_bars,
+        stock_pct=stock_cum,
+        market_pct=market_cum,
+        industry_vs_market=industry_vs_market,
+        stock_vs_industry=stock_vs_industry,
+        turnover_ratio=last_turnover,
+        residual=residual,
+        stock_abs_threshold=settings.stock_abs_threshold_pct,
+        market_move_threshold=settings.market_move_threshold_pct,
+        industry_move_threshold=settings.industry_move_threshold_pct,
+        divergence_threshold=settings.divergence_threshold_pct,
+        z_threshold=settings.anomaly_z_threshold,
+    )
+
     return MarketSnapshot(
         window_bars=window_bars,
         history_bars=history_bars,
@@ -148,6 +207,8 @@ async def fetch_snapshot(
         industry_cum=industry_cum,
         industry_selected=industry_selected,
         clue_reasons=clue_reasons,
+        residual=residual,
+        anomaly=anomaly,
         gaps=gaps,
     )
 
@@ -181,7 +242,7 @@ async def _fetch_index_bars(
     window_days: List[str],
     lookback_start: str,
     tool_suffix: str,
-) -> Tuple[Optional[float], Optional[DataGap], List[Bar]]:
+) -> Tuple[Optional[float], Optional[DataGap], List[Bar], List[Bar]]:
     bars, gap = await _fetch_bars(
         providers.market.index_daily_bars,
         code,
@@ -192,8 +253,9 @@ async def _fetch_index_bars(
         f"{name} 指数日 K",
     )
     if gap:
-        return None, gap, []
+        return None, gap, [], []
     selected = [b for b in bars if b.date in set(window_days)]
+    lookback = [b for b in bars if b.date < window_days[0]]
     cum = _cumulative(selected)
     if cum is None:
         return (
@@ -204,8 +266,9 @@ async def _fetch_index_bars(
                 impact="无法计算该层级的区间涨跌",
             ),
             [],
+            lookback,
         )
-    return cum, None, selected
+    return cum, None, selected, lookback
 
 
 async def _fetch_clue_reasons(
@@ -224,11 +287,14 @@ async def _fetch_clue_reasons(
     return res.value
 
 
-def _build_price_profiles(window_bars, history_bars, window, settings):
+def _build_price_profiles(window_bars, history_bars, window, settings, limit_pct=None):
     daily_profile = None
     if window == ResearchWindow.TODAY and window_bars:
         daily_profile = build_daily_profile(
-            window_bars[-1], history_bars, settings.turnover_baseline_days
+            window_bars[-1],
+            history_bars,
+            settings.turnover_baseline_days,
+            limit_pct=limit_pct,
         )
         cum = daily_profile.pct_change
     else:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.agent.actions import ActionName
 from app.agent.planner import HeuristicPlanner, is_legal, parse_action
 from app.agent.memory import AgentMemory
-from app.contracts import ResearchWindow
+from app.contracts import ResearchPriority, ResearchWindow
 from tests.conftest import research
 
 
@@ -13,7 +13,7 @@ def test_heuristic_plan_follows_research_stages():
     memory = AgentMemory("宁德时代", "t1")
     planner = HeuristicPlanner()
     seen = []
-    for _ in range(12):
+    for _ in range(14):
         action = planner.next(memory)
         seen.append(action.name)
         memory.record(action)
@@ -43,6 +43,16 @@ def test_heuristic_plan_follows_research_stages():
         ActionName.BUILD_TRANSMISSIONS,
         ActionName.ASSEMBLE_BRIEF,
     ]
+
+
+def test_no_anomaly_skips_attribution():
+    memory = AgentMemory("测试", "t-quiet")
+    memory.mark("subject")
+    memory.mark("snapshot")
+    memory.priority = ResearchPriority.NO_ANOMALY
+    action = HeuristicPlanner().next(memory)
+    assert action.name == ActionName.ASSEMBLE_BRIEF
+    assert is_legal(action, memory, extra_limit=2)
 
 
 def test_heuristic_retries_failed_scope_once():

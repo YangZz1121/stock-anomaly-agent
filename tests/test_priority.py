@@ -62,6 +62,7 @@ def test_scope_order_follows_priority():
     assert scope_order(ResearchPriority.MARKET_FIRST)[0] == "market"
     assert scope_order(ResearchPriority.INDUSTRY_FIRST)[0] == "industry"
     assert scope_order(ResearchPriority.COMPANY_FIRST)[0] == "company"
+    assert scope_order(ResearchPriority.NO_ANOMALY) == []
 
 
 def test_comparison_computes_relative_gaps_and_keeps_disclaimer():

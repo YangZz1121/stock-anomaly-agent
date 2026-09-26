@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.contracts import DataGap, EvidenceKind, SourceTier
+from app.engine.reason_tags import normalize_reason_tags
 from app.engine.source_tier import (
     classify_kind,
     classify_tier,
@@ -194,16 +195,20 @@ class EvidenceCollector:
         stock_name: str,
         industry_name: Optional[str],
         extra_terms: Optional[List[str]] = None,
+        start_date: Optional[str] = None,
+        pass_label: str = "additional",
     ) -> CollectionResult:
         """对单个范围再检索一次，新事件合并进已有结果。
 
         已登记过的 claim 会被跳过，避免二次检索把同一条新闻再变成新驱动因素。
+        start_date 用于公司暴露补证：年报等慢变量可以超出常规资讯窗口。
         """
         query = _build_query(scope, stock_name, industry_name, extra_terms or [])
         started = time.perf_counter()
+        start = start_date or window.extended_start
         res = await self._provider.search_events(
             query=query,
-            start_date=window.extended_start,
+            start_date=start,
             end_date=window.core_end,
             scope=scope,
             limit=20,
@@ -218,9 +223,9 @@ class EvidenceCollector:
             {
                 "scope": scope,
                 "query": query,
-                "start": window.extended_start,
+                "start": start,
                 "end": window.core_end,
-                "pass": "additional",
+                "pass": pass_label,
             },
             res.status,
             res.provider,
@@ -356,10 +361,11 @@ def register_clue_pool(
         clues.extend(reason.keywords or [])
         if reason.content:
             clues.append(reason.content[:40])
-    # 去重并保序
+    tagged = normalize_reason_tags(reasons)
+    # 标签优先，再拼登记过程中收集的关键词，保序去重
     seen = set()
     out = []
-    for c in clues:
+    for c in tagged + clues:
         if c and c not in seen:
             seen.add(c)
             out.append(c)

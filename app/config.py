@@ -48,20 +48,29 @@ class Settings(BaseSettings):
     path_efficiency_threshold: float = 0.70
     # 反转识别：切分前后两段累计收益的最小幅度，低于此视为噪声
     reversal_min_segment_pct: float = 0.02
-    # 三层对比：个股相对行业偏离超过该值视为"明显背离"
+    # 三层对比：个股相对行业残差超过该值视为"明显背离"
     divergence_threshold_pct: float = 0.02
-    # 行业相对市场偏离超过该值视为"行业明显变化"
+    # 行业相对市场残差超过该值视为"行业明显变化"
     industry_move_threshold_pct: float = 0.02
     # 市场自身变化超过该值视为"大盘不稳定"
     market_move_threshold_pct: float = 0.01
+    # 异动闸门：主板单日绝对涨跌门槛；创业板/科创按涨跌停档位放大
+    stock_abs_threshold_pct: float = 0.02
+    # 窗口前用于估计 beta 的最少重叠交易日
+    beta_min_obs: int = 10
+    # 残差 z 分数门槛（相对窗口前波动率）
+    anomaly_z_threshold: float = 2.0
     # 成交活跃度参考窗口
     turnover_baseline_days: int = 20
     # 证据扩展窗口（自然日）
     evidence_extended_window_days: int = 7
+    # 公司暴露补证：年报 / 半年报可回看的自然日。只确认业务基础，不验证今日事件。
+    exposure_lookback_days: int = 180
 
     # --- 行业与市场基准 ---
-    market_index_code: str = "000001.SH"
-    market_index_name: str = "上证指数"
+    # TradingAgents-astock / 沪深 300 作为全市场 alpha 基准
+    market_index_code: str = "000300.SH"
+    market_index_name: str = "沪深300"
     # 行业识别改为预置清单 + 定向核验，不再全市场扫描。
     # 这两个字段只为兼容旧环境变量，运行时不再使用。
     industry_map_max_calls: int = 1
@@ -74,12 +83,16 @@ class Settings(BaseSettings):
     static_cache_ttl_hours: int = 12
     # 日 K 进程缓存。历史区间几乎不变；含当日的请求用较短 TTL。
     bars_cache_ttl_seconds: int = 180
-    # Agent 环：规划 → 调用工具 → 观察，最多走多少步。启发式主路径约 8 步。
-    agent_max_steps: int = 12
-    # 首次检索之后，规划器最多还能追加几次检索（失败重试 + 反向证据）。
-    agent_extra_search_limit: int = 2
+    # Agent 环：规划 → 调用工具 → 观察，最多走多少步。启发式主路径约 8–10 步。
+    agent_max_steps: int = 14
+    # 首次检索之后，规划器最多还能追加几次检索（失败重试 + 断环补证 + 反向证据）。
+    agent_extra_search_limit: int = 3
     # 当前对话窗口最多保留多少轮（一轮 = 一次用户发言及其后的助手回复）。
     conversation_max_turns: int = 20
+    # 板块扫描：最多检查多少只成分股、最多展示多少只异动
+    sector_screen_max_constituents: int = 80
+    sector_screen_top_k: int = 8
+    sector_screen_concurrency: int = 8
 
     def resolved_market_provider(self) -> str:
         if self.market_provider != "auto":

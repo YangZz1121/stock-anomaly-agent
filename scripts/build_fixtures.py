@@ -120,7 +120,7 @@ def main() -> None:
     _dump(
         "market/indexes.json",
         {
-            "market_index": {"thscode": "000001.SH", "name": "上证指数"},
+            "market_index": {"thscode": "000300.SH", "name": "沪深300"},
             "industry_indexes": [
                 {"thscode": "886041.TI", "name": "电池"},
                 {"thscode": "886042.TI", "name": "白酒"},
@@ -204,6 +204,19 @@ def main() -> None:
     # ---------------- 大盘指数：整体温和 ----------------
     _bars(
         "000001.SH",
+        days,
+        3280.0,
+        {
+            d1: {"pct": -0.003},
+            d2: {"pct": 0.002},
+            d3: {"pct": -0.001},
+            d4: {"pct": -0.005},
+            d5: {"pct": -0.017, "gap": -0.009},
+        },
+        base_amount=5.2e11,
+    )
+    _bars(
+        "000300.SH",
         days,
         3280.0,
         {

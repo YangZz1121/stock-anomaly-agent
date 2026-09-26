@@ -34,8 +34,11 @@ from app.agent.evidence_collect import (
 from app.agent.memory import AgentMemory
 from app.agent.validation import MarketContext
 from app.config import Settings
-from app.contracts import ResearchPriority
+from app.contracts import ImpactDirection, ResearchPriority
 from app.engine import guardrails, presenter
+from app.engine.chain_logic import diagnose_patch
+from app.engine.driver_card import decorate_driver_card
+from app.timeutil import shift_days
 from app.engine.priority import build_comparison, decide_priority, priority_label, scope_order
 from app.engine.verdict import summarize_overall
 from app.pipeline import fetch_snapshot, resolve_subject
@@ -163,6 +166,7 @@ class ToolRuntime:
             stock_evidence_id=memory.stock_evidence_id,
             industry_evidence_id=memory.industry_evidence_id,
             market_evidence_id=memory.market_evidence_id,
+            residual=snapshot.residual,
         )
 
         self.recorder.step("priority", "running")
@@ -173,6 +177,8 @@ class ToolRuntime:
             divergence_threshold=self.settings.divergence_threshold_pct,
             industry_move_threshold=self.settings.industry_move_threshold_pct,
             market_move_threshold=self.settings.market_move_threshold_pct,
+            residual=snapshot.residual,
+            anomaly=snapshot.anomaly,
         )
         if priority_gap:
             memory.gaps.append(priority_gap)
@@ -191,6 +197,7 @@ class ToolRuntime:
             resolution.info.label,
             memory.stock_evidence_id,
             memory.gaps,
+            anomaly=snapshot.anomaly,
         )
         memory.mark("snapshot")
 
@@ -247,7 +254,28 @@ class ToolRuntime:
 
         self.recorder.step("retrieve", "running")
         before = {g.field for g in memory.collection.gaps} if memory.collection else set()
+        is_chain_patch = memory.has("assessed")
+        pending = getattr(memory, "pending_patch", None) or (
+            diagnose_patch(memory) if is_chain_patch else None
+        )
+        lookback_start = None
+        if (
+            is_chain_patch
+            and pending is not None
+            and pending.needs_exposure_lookback
+            and memory.evidence_window is not None
+        ):
+            lookback_start = shift_days(
+                memory.evidence_window.core_end,
+                -self.settings.exposure_lookback_days,
+            )
+            memory.mark("exposure_lookback")
+            self.recorder.log(
+                f"公司暴露补证：年报/半年报检索回溯至 {lookback_start}"
+                f"（{self.settings.exposure_lookback_days} 个自然日）"
+            )
         for scope in scopes:
+            start = lookback_start if scope == "company" and lookback_start else None
             memory.collection = await collector.collect_scope(
                 result=memory.collection,
                 window=memory.evidence_window,
@@ -255,6 +283,8 @@ class ToolRuntime:
                 stock_name=subject.stock.name,
                 industry_name=subject.industry.index_name,
                 extra_terms=action.extra_terms or memory.clue_pool,
+                start_date=start,
+                pass_label="patch" if is_chain_patch else "additional",
             )
             memory.retried_scopes.add(scope)
         memory.extra_searches += 1
@@ -272,9 +302,13 @@ class ToolRuntime:
         self.recorder.step(
             "retrieve",
             "done",
-            f"补充检索 {', '.join(scopes)}",
+            f"{'定向补证' if is_chain_patch else '补充检索'} {', '.join(scopes)}",
         )
         memory.ctx = _market_context(memory, self.settings)
+        if is_chain_patch:
+            memory.mark("patched")
+            memory.pending_patch = None
+            memory._flags.discard("assessed")
 
     async def _propose(self, memory: AgentMemory) -> None:
         assert memory.collection is not None and memory.ctx is not None
@@ -397,6 +431,7 @@ class ToolRuntime:
             driver.assessment = build_assessment(
                 driver, cluster, checks, draft, memory.ledger
             )
+            decorate_driver_card(driver)
             assessed_ids.append(driver.id)
         memory._assessed_ids = assessed_ids  # type: ignore[attr-defined]
         self.recorder.step("exposure", "done")
@@ -408,23 +443,34 @@ class ToolRuntime:
         snapshot = memory.snapshot
         assert subject is not None and snapshot is not None
         self.recorder.step("verdict", "running")
-        overall_dir, overall_display, overall_reason, can_summarize = summarize_overall(
-            [
-                (d.assessment.direction, d.assessment.strength)
-                for d in memory.drivers
-                if d.assessment is not None
-            ]
-        )
-        assessed_ids = getattr(memory, "_assessed_ids", [])
+        for driver in memory.drivers:
+            if not driver.thesis:
+                decorate_driver_card(driver)
+        if memory.priority == ResearchPriority.NO_ANOMALY:
+            overall_dir, overall_display, overall_reason, can_summarize = (
+                ImpactDirection.UNCERTAIN,
+                "未见显著异动，未展开归因",
+                memory.priority_reason
+                or "价格变化未达到异动门槛，因此不检索资讯、不生成驱动因素。",
+                False,
+            )
+            assessed_ids = []
+        else:
+            overall_dir, overall_display, overall_reason, can_summarize = summarize_overall(
+                [
+                    (d.assessment.direction, d.assessment.strength)
+                    for d in memory.drivers
+                    if d.assessment is not None
+                ]
+            )
+            assessed_ids = getattr(memory, "_assessed_ids", [])
         why = WhyHappenedSection(
             priority=memory.priority or ResearchPriority.COMPANY_FIRST,
             priority_label=priority_label(memory.priority or ResearchPriority.COMPANY_FIRST),
             priority_reason=memory.priority_reason,
             drivers=memory.drivers,
             clue_pool=memory.clue_pool,
-            evidence_window_note=(
-                memory.evidence_window.describe() if memory.evidence_window else ""
-            ),
+            evidence_window_note=_window_note(memory, self.settings),
             gaps=[g for g in memory.gaps if g.field.startswith("evidence")],
         )
         what_it_means = WhatItMeansSection(
@@ -439,6 +485,10 @@ class ToolRuntime:
         open_questions = build_open_questions(
             memory.drivers, memory.gaps, subject.industry
         )
+        if memory.priority == ResearchPriority.NO_ANOMALY:
+            gate_note = "价格变化未达到异动门槛，若后续出现显著偏离可再研究。"
+            if gate_note not in open_questions.questions:
+                open_questions.questions.insert(0, gate_note)
         metrics = compute_metrics(
             memory.drivers,
             memory.ledger,
@@ -501,6 +551,19 @@ def _market_context(memory: AgentMemory, settings: Settings) -> MarketContext:
         has_minute_data=False,
         divergence_threshold=settings.divergence_threshold_pct,
         industry_move_threshold=settings.industry_move_threshold_pct,
+        market_move_threshold=settings.market_move_threshold_pct,
         industry_name=subject.industry.index_name,
         stock_name=subject.stock.name,
     )
+
+
+def _window_note(memory: AgentMemory, settings: Settings) -> str:
+    if memory.evidence_window is None:
+        return ""
+    note = memory.evidence_window.describe()
+    if memory.has("exposure_lookback"):
+        note += (
+            f" 公司暴露补证另回溯至最近 {settings.exposure_lookback_days}"
+            " 个自然日的年报 / 半年报，只用来确认业务基础，不作为本次异动事件。"
+        )
+    return note

@@ -4,6 +4,9 @@
 
 规划文档反复强调的约束在这里体现为代码注释与对外声明：三层对比的差值
 不是因果贡献，不能读成"市场导致 -1%、行业导致 -6%、公司导致 -2%"。
+
+相对比较优先使用 Qlib 风格的 OLS β 残差；估不出 beta 时退回原始相减。
+未见显著异动时路由到 ``NO_ANOMALY``，不再进入归因。
 """
 
 from __future__ import annotations
@@ -16,11 +19,14 @@ from app.contracts import (
     ResearchPriority,
 )
 from app.engine import presenter
+from app.engine.anomaly import AnomalyGate
+from app.engine.residual import ResidualBreakdown
 from app.schemas import LayerComparison
 
 DISCLAIMER = (
     "三层对比仅用于确定研究优先级，不代表各层对本次价格变化的因果贡献；"
     "不能读作「市场贡献 X%、行业贡献 Y%、公司贡献 Z%」。"
+    "相对比较优先使用窗口前 OLS β 残差，估不出 beta 时退回原始涨跌相减。"
 )
 
 
@@ -33,18 +39,40 @@ def build_comparison(
     stock_evidence_id: Optional[str] = None,
     industry_evidence_id: Optional[str] = None,
     market_evidence_id: Optional[str] = None,
+    residual: Optional[ResidualBreakdown] = None,
 ) -> LayerComparison:
     caliber = f"{window_label}区间累计涨跌"
 
-    industry_vs_market = (
+    raw_industry_vs_market = (
         industry_pct - market_pct
         if industry_pct is not None and market_pct is not None
         else None
     )
-    stock_vs_industry = (
+    raw_stock_vs_industry = (
         stock_pct - industry_pct
         if stock_pct is not None and industry_pct is not None
         else None
+    )
+
+    industry_vs_market = (
+        residual.industry_vs_market
+        if residual is not None and residual.industry_vs_market is not None
+        else raw_industry_vs_market
+    )
+    stock_vs_industry = (
+        residual.stock_vs_industry
+        if residual is not None and residual.stock_vs_industry is not None
+        else raw_stock_vs_industry
+    )
+    residual_caliber = (
+        "窗口累计涨跌 − β × 基准累计涨跌"
+        if residual is not None and residual.method == "ols_beta"
+        else "行业区间涨跌 - 市场区间涨跌"
+    )
+    stock_residual_caliber = (
+        "窗口累计涨跌 − β × 行业累计涨跌"
+        if residual is not None and residual.method == "ols_beta"
+        else "个股区间涨跌 - 行业区间涨跌"
     )
 
     return LayerComparison(
@@ -77,22 +105,61 @@ def build_comparison(
         ),
         industry_vs_market=presenter.measure(
             "industry_vs_market",
-            "行业相对市场",
+            "行业相对市场（残差）",
             industry_vs_market,
             presenter.pct_points(industry_vs_market),
             unit=presenter.UNIT_PCT_POINTS,
-            caliber="行业区间涨跌 - 市场区间涨跌",
+            caliber=residual_caliber,
         ),
         stock_vs_industry=presenter.measure(
             "stock_vs_industry",
-            "个股相对行业",
+            "个股相对行业（残差）",
             stock_vs_industry,
             presenter.pct_points(stock_vs_industry),
             unit=presenter.UNIT_PCT_POINTS,
+            caliber=stock_residual_caliber,
+        ),
+        industry_vs_market_raw=presenter.measure(
+            "industry_vs_market_raw",
+            "行业相对市场（原始相减）",
+            raw_industry_vs_market,
+            presenter.pct_points(raw_industry_vs_market),
+            unit=presenter.UNIT_PCT_POINTS,
+            caliber="行业区间涨跌 - 市场区间涨跌",
+        ),
+        stock_vs_industry_raw=presenter.measure(
+            "stock_vs_industry_raw",
+            "个股相对行业（原始相减）",
+            raw_stock_vs_industry,
+            presenter.pct_points(raw_stock_vs_industry),
+            unit=presenter.UNIT_PCT_POINTS,
             caliber="个股区间涨跌 - 行业区间涨跌",
         ),
+        beta_market=presenter.measure(
+            "beta_market",
+            "个股对市场 β",
+            residual.beta_market if residual else None,
+            _beta_display(residual.beta_market if residual else None),
+            unit=presenter.UNIT_RATIO,
+            caliber="窗口前重叠日收益 OLS",
+        ),
+        beta_industry=presenter.measure(
+            "beta_industry",
+            "个股对行业 β",
+            residual.beta_industry if residual else None,
+            _beta_display(residual.beta_industry if residual else None),
+            unit=presenter.UNIT_RATIO,
+            caliber="窗口前重叠日收益 OLS",
+        ),
+        residual_note=residual.note if residual else None,
         disclaimer=DISCLAIMER,
     )
+
+
+def _beta_display(value: Optional[float]) -> str:
+    if value is None:
+        return presenter.UNAVAILABLE
+    return f"{value:.2f}"
 
 
 def decide_priority(
@@ -103,8 +170,17 @@ def decide_priority(
     divergence_threshold: float,
     industry_move_threshold: float,
     market_move_threshold: float,
+    residual: Optional[ResidualBreakdown] = None,
+    anomaly: Optional[AnomalyGate] = None,
 ) -> Tuple[ResearchPriority, str, Optional[DataGap]]:
     """根据三层表现决定第二阶段的调查顺序。"""
+
+    if anomaly is not None and not anomaly.is_anomaly:
+        return (
+            ResearchPriority.NO_ANOMALY,
+            anomaly.note,
+            None,
+        )
 
     if stock_pct is None:
         return (
@@ -130,8 +206,18 @@ def decide_priority(
             ),
         )
 
-    industry_vs_market = industry_pct - market_pct
-    stock_vs_industry = stock_pct - industry_pct
+    raw_industry_vs_market = industry_pct - market_pct
+    raw_stock_vs_industry = stock_pct - industry_pct
+    industry_vs_market = (
+        residual.industry_vs_market
+        if residual is not None and residual.industry_vs_market is not None
+        else raw_industry_vs_market
+    )
+    stock_vs_industry = (
+        residual.stock_vs_industry
+        if residual is not None and residual.stock_vs_industry is not None
+        else raw_stock_vs_industry
+    )
 
     industry_moved = abs(industry_vs_market) >= industry_move_threshold
     stock_diverged = abs(stock_vs_industry) >= divergence_threshold
@@ -139,13 +225,13 @@ def decide_priority(
 
     fmt = presenter.pct
     fmt_pts = presenter.pct_points
+    method = "残差" if residual is not None and residual.method == "ols_beta" else "原始相减"
     facts = (
         f"市场 {fmt(market_pct)}、行业 {fmt(industry_pct)}、个股 {fmt(stock_pct)}；"
-        f"行业相对市场 {fmt_pts(industry_vs_market)}，"
-        f"个股相对行业 {fmt_pts(stock_vs_industry)}。"
+        f"行业相对市场（{method}）{fmt_pts(industry_vs_market)}，"
+        f"个股相对行业（{method}）{fmt_pts(stock_vs_industry)}。"
     )
 
-    # 行业明显变化，同时个股进一步明显偏离 —— 两条线并行调查
     if industry_moved and stock_diverged:
         return (
             ResearchPriority.INDUSTRY_PLUS_COMPANY,
@@ -154,7 +240,6 @@ def decide_priority(
             None,
         )
 
-    # 个股明显背离行业和市场 —— 优先查公司
     if stock_diverged:
         return (
             ResearchPriority.COMPANY_FIRST,
@@ -163,7 +248,6 @@ def decide_priority(
             None,
         )
 
-    # 行业明显变化但大盘稳定 —— 优先查行业
     if industry_moved and not market_moved:
         return (
             ResearchPriority.INDUSTRY_FIRST,
@@ -172,7 +256,6 @@ def decide_priority(
             None,
         )
 
-    # 其余情况视为三层高度同步 —— 从市场 / 宏观查起
     return (
         ResearchPriority.MARKET_FIRST,
         facts + "市场、行业与个股变化方向和幅度较为接近，"
@@ -192,4 +275,5 @@ def scope_order(priority: ResearchPriority):
         ResearchPriority.INDUSTRY_FIRST: ["industry", "company", "market"],
         ResearchPriority.COMPANY_FIRST: ["company", "industry", "market"],
         ResearchPriority.INDUSTRY_PLUS_COMPANY: ["industry", "company", "market"],
+        ResearchPriority.NO_ANOMALY: [],
     }[priority]

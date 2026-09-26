@@ -25,6 +25,7 @@ from app.chat import answer_chitchat, gate_intent, run_chat
 from app.config import get_settings
 from app.contracts import ResearchWindow, WINDOW_LABELS
 from app.engine import guardrails
+from app.engine.company_index import is_screen_query
 from app.engine.intent import (
     CHITCHAT_HINT,
     MODEL_REPLY,
@@ -39,7 +40,7 @@ from app.engine.intent import (
 )
 from app.errors import NeedsWindowChoice, ResearchError
 from app.providers.registry import build_providers, describe_providers
-from app.trace import PROGRESS_STEPS, SNAPSHOT_STEPS, RunRecorder
+from app.trace import PROGRESS_STEPS, SECTOR_STEPS, SNAPSHOT_STEPS, RunRecorder
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -110,6 +111,10 @@ async def research(payload: ResearchPayload) -> JSONResponse:
         )
     if peek.kind == IntentKind.NONSENSE and is_nonsense_text(payload.query):
         raise HTTPException(status_code=422, detail=_error_body_intent(peek))
+    if peek.kind == IntentKind.NEED_WINDOW:
+        raise HTTPException(status_code=422, detail=_error_body_intent(peek))
+    if peek.kind == IntentKind.NEED_STOCK and is_screen_query(payload.query):
+        raise HTTPException(status_code=422, detail=_error_body_intent(peek))
     settings = get_settings()
     providers = build_providers(settings, faults=set(payload.faults or []))
     recorder = RunRecorder(_run_id())
@@ -133,6 +138,8 @@ async def research(payload: ResearchPayload) -> JSONResponse:
         )
     if result.kind == "ask" and result.ask:
         return JSONResponse(content={"kind": "ask", **result.ask})
+    if result.kind == "sector_screen" and result.sector:
+        return JSONResponse(content=json.loads(result.sector.model_dump_json()))
     if len(result.briefs) == 1:
         return JSONResponse(content=json.loads(result.briefs[0].model_dump_json()))
     return JSONResponse(
@@ -152,6 +159,7 @@ async def research_stream(
     context_queries: Optional[str] = Query(None),
     context_window: Optional[ResearchWindow] = Query(None),
     context_answers: Optional[str] = Query(None),
+    context_turns: Optional[str] = Query(None),
     faults: Optional[str] = Query(None),
 ) -> StreamingResponse:
     fault_set = {f.strip() for f in (faults or "").split(",") if f.strip()}
@@ -160,6 +168,7 @@ async def research_stream(
         _split_context(context_queries, sep="\n"),
         context_window,
         answers=_parse_answers(context_answers),
+        turns=_parse_turns(context_turns),
     )
     return StreamingResponse(
         _stream(query, window, fault_set, context),
@@ -184,6 +193,14 @@ async def _stream(
             yield chunk
         return
     if peek.kind == IntentKind.NONSENSE and is_nonsense_text(query):
+        yield _sse("error", _error_body_intent(peek))
+        yield _sse("done", {})
+        return
+    if peek.kind == IntentKind.NEED_WINDOW:
+        yield _sse("error", _error_body_intent(peek))
+        yield _sse("done", {})
+        return
+    if peek.kind == IntentKind.NEED_STOCK and is_screen_query(query):
         yield _sse("error", _error_body_intent(peek))
         yield _sse("done", {})
         return
@@ -212,7 +229,12 @@ async def _stream(
             {"message": notice_text(minutes), "minutes": minutes},
         )
 
-    steps = SNAPSHOT_STEPS if intent.kind == IntentKind.SNAPSHOT else PROGRESS_STEPS
+    if intent.kind == IntentKind.SNAPSHOT:
+        steps = SNAPSHOT_STEPS
+    elif intent.kind == IntentKind.SECTOR_SCREEN:
+        steps = SECTOR_STEPS
+    else:
+        steps = PROGRESS_STEPS
     yield _sse(
         "start",
         {
@@ -256,6 +278,8 @@ async def _stream(
                 "reply",
                 {"kind": "chitchat", "message": result.reply, "hint": result.hint},
             )
+        if result.kind == "sector_screen" and result.sector:
+            yield _sse("sector_screen", json.loads(result.sector.model_dump_json()))
         for brief in result.briefs:
             yield _sse("brief", json.loads(brief.model_dump_json()))
     except (NeedsWindowChoice, ResearchError) as exc:
@@ -342,6 +366,42 @@ def _conversation_context(
         ),
         max_turns=settings.conversation_max_turns,
     )
+
+
+def _parse_turns(raw: Optional[str]) -> List[ConversationTurn]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(data, list):
+        return []
+    out: List[ConversationTurn] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        if role not in ("user", "assistant"):
+            continue
+        stocks = item.get("stocks") or []
+        if not isinstance(stocks, list):
+            stocks = []
+        window = item.get("window")
+        try:
+            parsed_window = ResearchWindow(window) if window else None
+        except ValueError:
+            parsed_window = None
+        out.append(
+            ConversationTurn(
+                role=role,
+                text=str(item.get("text") or ""),
+                kind=str(item.get("kind") or ""),
+                stocks=[str(s).strip() for s in stocks if str(s).strip()],
+                window=parsed_window,
+            )
+        )
+    return out
 
 
 def _parse_answers(raw: Optional[str]) -> Dict[str, str]:
