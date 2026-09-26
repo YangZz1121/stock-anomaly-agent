@@ -112,6 +112,60 @@ class OpenAICompatibleLLM:
 
         return Fetched.failure(source, self.name, last_note, FetchStatus.FAILED)
 
+    async def complete_text(
+        self,
+        purpose: str,
+        system: str,
+        user: str,
+    ) -> Fetched[str]:
+        source = f"llm:{self.model}:{purpose}"
+        if not self._has_key:
+            return Fetched.failure(source, self.name, "未配置 LLM_API_KEY")
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.4,
+        }
+
+        last_note = "未知错误"
+        for attempt in range(self._max_retries + 1):
+            started = time.perf_counter()
+            try:
+                resp = await self._client.post("/chat/completions", json=payload)
+            except httpx.TimeoutException:
+                last_note = "LLM 请求超时"
+                continue
+            except httpx.HTTPError as exc:
+                last_note = f"LLM 网络错误：{exc}"
+                continue
+            if resp.status_code == 429:
+                last_note = "LLM 触发频率限制"
+                continue
+            if resp.status_code >= 400:
+                last_note = f"LLM HTTP {resp.status_code}：{resp.text[:200]}"
+                continue
+            try:
+                body = resp.json()
+                content = (body["choices"][0]["message"]["content"] or "").strip()
+            except (ValueError, KeyError, IndexError) as exc:
+                last_note = f"LLM 响应结构异常：{exc}"
+                continue
+            if not content:
+                last_note = "LLM 返回空内容"
+                continue
+            latency = int((time.perf_counter() - started) * 1000)
+            return Fetched.success(
+                content,
+                source,
+                self.name,
+                note=f"attempt={attempt + 1}, latency_ms={latency}",
+            )
+        return Fetched.failure(source, self.name, last_note, FetchStatus.FAILED)
+
 
 class DisabledLLM:
     """没有密钥时的占位实现，任何调用都显式失败。"""
@@ -133,6 +187,18 @@ class DisabledLLM:
             f"llm:disabled:{purpose}",
             self.name,
             "未配置 LLM，已改用确定性启发式推理层",
+        )
+
+    async def complete_text(
+        self,
+        purpose: str,
+        system: str,
+        user: str,
+    ) -> Fetched[str]:
+        return Fetched.failure(
+            f"llm:disabled:{purpose}",
+            self.name,
+            "未配置 LLM，闲聊改用固定介绍文案",
         )
 
 

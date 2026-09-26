@@ -161,6 +161,10 @@ function run(presetQuery) {
   $("runBtn").disabled = true;
   const params = new URLSearchParams({ query });
   if (state.window) params.set("window", state.window);
+  const ctx = conversationContext();
+  if (ctx.stocks.length) params.set("context_stocks", ctx.stocks.join(","));
+  if (ctx.queries.length) params.set("context_queries", ctx.queries.join("\n"));
+  if (ctx.window) params.set("context_window", ctx.window);
 
   const started = performance.now();
   state.timer = setInterval(() => {
@@ -211,6 +215,15 @@ function run(presetQuery) {
     adoptBriefs(msg.briefs);
     paintAssistant(aid);
   });
+  source.addEventListener("reply", (e) => {
+    const data = JSON.parse(e.data);
+    const msg = state.messages.find((m) => m.id === aid);
+    if (!msg) return;
+    msg.phase = "reply";
+    msg.reply = data.message || "";
+    msg.replyHint = data.hint || "";
+    paintAssistant(aid);
+  });
   source.addEventListener("error", (e) => {
     if (!e.data) return;
     const msg = state.messages.find((m) => m.id === aid);
@@ -221,6 +234,27 @@ function run(presetQuery) {
   });
   source.addEventListener("done", () => finish(source));
   source.onerror = () => finish(source);
+}
+
+function conversationContext() {
+  const priors = [];
+  let latestStocks = [];
+  let latestWindow = "";
+  for (const m of state.messages) {
+    if (m.role === "user" && m.text) priors.push(m.text);
+    if (m.role !== "assistant") continue;
+    const briefs = m.briefs && m.briefs.length ? m.briefs : (m.brief ? [m.brief] : []);
+    const names = briefs.map((b) => b && b.subject && b.subject.stock && b.subject.stock.name).filter(Boolean);
+    if (names.length) {
+      latestStocks = names;
+      latestWindow = (briefs[0].subject.window && briefs[0].subject.window.window) || "";
+    }
+  }
+  return {
+    stocks: [...new Set(latestStocks)],
+    queries: priors.slice(0, -1).slice(-6),
+    window: latestWindow,
+  };
 }
 
 function finish(source) {
@@ -296,6 +330,12 @@ function revealMessage(id) {
 
 function renderReply(m) {
   if (m.phase === "thinking") return renderThinking(m);
+  if (m.phase === "reply") {
+    return `<div class="plain-card">
+      <p>${esc(m.reply || "")}</p>
+      ${m.replyHint ? `<p class="hint">${esc(m.replyHint)}</p>` : ""}
+    </div>`;
+  }
   if (m.phase === "error") return renderError(m.error);
   if (m.phase === "brief") {
     const briefs = m.briefs && m.briefs.length ? m.briefs : (m.brief ? [m.brief] : []);
@@ -333,7 +373,7 @@ function renderError(err) {
           .map(([v, l]) => `<button type="button" data-win="${v}">${l}</button>`).join("")
       }</div>`
     : "";
-  const calm = err && (err.code === "nonsense" || err.code === "need_stock");
+  const calm = err && (err.code === "nonsense" || err.code === "need_stock" || err.code === "chitchat");
   if (calm) {
     return `<div class="plain-card">
       <p>${esc(err.message || "")}</p>

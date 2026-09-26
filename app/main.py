@@ -21,11 +21,18 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.chat import gate_intent, run_chat
+from app.chat import answer_chitchat, gate_intent, run_chat
 from app.config import get_settings
 from app.contracts import ResearchWindow, WINDOW_LABELS
 from app.engine import guardrails
-from app.engine.intent import IntentKind, estimate_report_minutes, notice_text
+from app.engine.intent import (
+    CHITCHAT_HINT,
+    MODEL_REPLY,
+    ConversationContext,
+    IntentKind,
+    estimate_report_minutes,
+    notice_text,
+)
 from app.errors import NeedsWindowChoice, ResearchError
 from app.providers.registry import build_providers, describe_providers
 from app.trace import PROGRESS_STEPS, SNAPSHOT_STEPS, RunRecorder
@@ -42,6 +49,9 @@ app = FastAPI(
 class ResearchPayload(BaseModel):
     query: str
     window: Optional[ResearchWindow] = None
+    context_stocks: Optional[List[str]] = None
+    context_queries: Optional[List[str]] = None
+    context_window: Optional[ResearchWindow] = None
     faults: Optional[List[str]] = None
 
 
@@ -75,13 +85,24 @@ async def config() -> Dict[str, Any]:
 
 @app.post("/api/research")
 async def research(payload: ResearchPayload) -> JSONResponse:
-    intent = _classify_or_http_error(payload.query, payload.window)
+    context = _conversation_context(
+        payload.context_stocks, payload.context_queries, payload.context_window
+    )
+    intent = _classify_or_http_error(payload.query, payload.window, context)
+    if intent.kind == IntentKind.CHITCHAT and intent.chitchat_topic == "model":
+        return JSONResponse(
+            content={
+                "kind": "chitchat",
+                "message": MODEL_REPLY,
+                "hint": intent.hint or CHITCHAT_HINT,
+            }
+        )
     settings = get_settings()
     providers = build_providers(settings, faults=set(payload.faults or []))
     recorder = RunRecorder(_run_id())
     try:
         result = await run_chat(
-            payload.query, payload.window, providers, settings, recorder
+            payload.query, payload.window, providers, settings, recorder, context
         )
     except NeedsWindowChoice as exc:
         raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
@@ -89,6 +110,14 @@ async def research(payload: ResearchPayload) -> JSONResponse:
         raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
     finally:
         await providers.aclose()
+    if result.kind == "chitchat":
+        return JSONResponse(
+            content={
+                "kind": "chitchat",
+                "message": result.reply,
+                "hint": result.hint,
+            }
+        )
     if len(result.briefs) == 1:
         return JSONResponse(content=json.loads(result.briefs[0].model_dump_json()))
     return JSONResponse(
@@ -104,11 +133,19 @@ async def research(payload: ResearchPayload) -> JSONResponse:
 async def research_stream(
     query: str = Query(..., min_length=1),
     window: Optional[ResearchWindow] = Query(None),
+    context_stocks: Optional[str] = Query(None),
+    context_queries: Optional[str] = Query(None),
+    context_window: Optional[ResearchWindow] = Query(None),
     faults: Optional[str] = Query(None),
 ) -> StreamingResponse:
     fault_set = {f.strip() for f in (faults or "").split(",") if f.strip()}
+    context = _conversation_context(
+        _split_context(context_stocks),
+        _split_context(context_queries, sep="\n"),
+        context_window,
+    )
     return StreamingResponse(
-        _stream(query, window, fault_set),
+        _stream(query, window, fault_set, context),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -118,12 +155,22 @@ async def research_stream(
     )
 
 
-async def _stream(query: str, window: Optional[ResearchWindow], faults: set):
+async def _stream(
+    query: str,
+    window: Optional[ResearchWindow],
+    faults: set,
+    context: Optional[ConversationContext] = None,
+):
     try:
-        intent = gate_intent(query, window)
+        intent = gate_intent(query, window, context=context)
     except (NeedsWindowChoice, ResearchError) as exc:
         yield _sse("error", _error_body(exc))
         yield _sse("done", {})
+        return
+
+    if intent.kind == IntentKind.CHITCHAT:
+        async for chunk in _stream_chitchat(query, intent, faults):
+            yield chunk
         return
 
     settings = get_settings()
@@ -153,7 +200,7 @@ async def _stream(query: str, window: Optional[ResearchWindow], faults: set):
     )
 
     task = asyncio.create_task(
-        run_chat(query, window, providers, settings, recorder)
+        run_chat(query, window, providers, settings, recorder, context)
     )
 
     try:
@@ -196,9 +243,71 @@ async def _stream(query: str, window: Optional[ResearchWindow], faults: set):
         yield _sse("done", {})
 
 
-def _classify_or_http_error(query: str, window: Optional[ResearchWindow]):
+async def _stream_chitchat(query: str, intent, faults: set):
+    if intent.chitchat_topic == "model":
+        yield _sse(
+            "reply",
+            {
+                "kind": "chitchat",
+                "message": MODEL_REPLY,
+                "hint": intent.hint or CHITCHAT_HINT,
+            },
+        )
+        yield _sse("done", {})
+        return
+
+    settings = get_settings()
+    providers = build_providers(settings, faults=faults)
+    recorder = RunRecorder(_run_id())
     try:
-        return gate_intent(query, window)
+        text = await answer_chitchat(query, intent, providers.llm, recorder)
+        yield _sse(
+            "reply",
+            {
+                "kind": "chitchat",
+                "message": text,
+                "hint": intent.hint or CHITCHAT_HINT,
+            },
+        )
+    except Exception as exc:  # pragma: no cover
+        yield _sse(
+            "error",
+            {
+                "code": "internal_error",
+                "message": "闲聊回复失败。",
+                "hint": str(exc)[:300],
+            },
+        )
+    finally:
+        await providers.aclose()
+        yield _sse("done", {})
+
+
+def _conversation_context(
+    stocks: Optional[List[str]],
+    queries: Optional[List[str]],
+    window: Optional[ResearchWindow],
+) -> ConversationContext:
+    return ConversationContext(
+        stocks=[item.strip() for item in (stocks or []) if item and item.strip()],
+        queries=[item.strip() for item in (queries or []) if item and item.strip()],
+        window=window,
+    )
+
+
+def _split_context(raw: Optional[str], sep: str = ",") -> List[str]:
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(sep) if part.strip()]
+
+
+def _classify_or_http_error(
+    query: str,
+    window: Optional[ResearchWindow],
+    context: Optional[ConversationContext] = None,
+):
+    try:
+        return gate_intent(query, window, context=context)
     except NeedsWindowChoice as exc:
         raise HTTPException(status_code=422, detail=_error_body(exc)) from exc
     except ResearchError as exc:

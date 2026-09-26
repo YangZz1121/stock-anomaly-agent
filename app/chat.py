@@ -8,12 +8,26 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.contracts import ResearchWindow
-from app.engine.intent import ChatIntent, IntentKind, classify_intent
+from app.engine.intent import (
+    CAPABILITY_REPLY,
+    CHITCHAT_HINT,
+    MODEL_REPLY,
+    ChatIntent,
+    ConversationContext,
+    IntentKind,
+    classify_intent,
+)
 from app.errors import NeedsWindowChoice, ResearchError
 from app.orchestrator import ResearchRequest, run_research, run_snapshot
 from app.providers.registry import ProviderBundle
 from app.schemas import ResearchBrief
 from app.trace import RunRecorder
+
+CHITCHAT_SYSTEM = """你是个股异动研究助手，用简体中文回答用户的闲聊。
+可以介绍你能做什么：先确认股票名称或代码、再确认研究窗口，然后给出行情快照或完整异动分析（发生了什么、为什么、对公司意味着什么）。
+禁止买卖建议、目标价、确定性股价预测，也不要编造具体行情或新闻。
+不要透露具体模型名称、厂商或版本。如果被问到模型，只回答：基于您的提问，我会挑选最合适的模型完成任务。
+回复控制在 120 字以内，语气简洁。"""
 
 
 class ChatResult(BaseModel):
@@ -21,10 +35,16 @@ class ChatResult(BaseModel):
     wants_full_report: bool = False
     briefs: List[ResearchBrief] = Field(default_factory=list)
     tasks: List[Dict[str, str]] = Field(default_factory=list)
+    reply: Optional[str] = None
+    hint: str = ""
 
 
-def gate_intent(query: str, window: Optional[ResearchWindow] = None) -> ChatIntent:
-    intent = classify_intent(query, window)
+def gate_intent(
+    query: str,
+    window: Optional[ResearchWindow] = None,
+    context: Optional[ConversationContext] = None,
+) -> ChatIntent:
+    intent = classify_intent(query, window, context=context)
     if intent.kind == IntentKind.NONSENSE:
         raise ResearchError("nonsense", intent.message, intent.hint)
     if intent.kind == IntentKind.NEED_STOCK:
@@ -34,14 +54,46 @@ def gate_intent(query: str, window: Optional[ResearchWindow] = None) -> ChatInte
     return intent
 
 
+async def answer_chitchat(
+    query: str,
+    intent: ChatIntent,
+    llm,
+    recorder: RunRecorder,
+) -> str:
+    if intent.chitchat_topic == "model":
+        return MODEL_REPLY
+    result = await llm.complete_text("chitchat", CHITCHAT_SYSTEM, query)
+    recorder.record_llm(
+        purpose="chitchat",
+        model=getattr(llm, "model", "unknown"),
+        provider=getattr(llm, "name", "unknown"),
+        latency_ms=0,
+        ok=result.ok,
+        note=result.note,
+        prompt_chars=len(query),
+        response_chars=len(result.value or "") if result.ok else 0,
+    )
+    if result.ok and result.value:
+        return str(result.value).strip()
+    return CAPABILITY_REPLY
+
+
 async def run_chat(
     query: str,
     window: Optional[ResearchWindow],
     providers: ProviderBundle,
     settings: Settings,
     recorder: RunRecorder,
+    context: Optional[ConversationContext] = None,
 ) -> ChatResult:
-    intent = gate_intent(query, window)
+    intent = gate_intent(query, window, context=context)
+    if intent.kind == IntentKind.CHITCHAT:
+        text = await answer_chitchat(query, intent, providers.llm, recorder)
+        return ChatResult(
+            kind=intent.kind.value,
+            reply=text,
+            hint=intent.hint or CHITCHAT_HINT,
+        )
     keys = intent.parsed.search_keys
     briefs: List[ResearchBrief] = []
     tasks: List[Dict[str, str]] = []
@@ -56,7 +108,11 @@ async def run_chat(
                 "label": key,
             },
         )
-        request = ResearchRequest(query=query, window=window, search_key=key)
+        request = ResearchRequest(
+            query=query,
+            window=window or intent.parsed.window,
+            search_key=key,
+        )
         if intent.kind == IntentKind.SNAPSHOT:
             brief = await run_snapshot(request, providers, settings, recorder)
         else:

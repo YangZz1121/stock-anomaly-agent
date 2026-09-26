@@ -153,4 +153,12 @@ class LLMProvider(Protocol):
     ) -> Fetched[Dict[str, Any]]:
         """要求模型返回 JSON 对象。解析失败视为调用失败，不做容错猜测。"""
 
+    async def complete_text(
+        self,
+        purpose: str,
+        system: str,
+        user: str,
+    ) -> Fetched[str]:
+        """闲聊等自由文本回复。"""
+
     async def aclose(self) -> None: ...
